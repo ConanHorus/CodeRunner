@@ -8,6 +8,12 @@ import (
 	"github.com/hajimehoshi/ebiten/v2/vector"
 )
 
+const (
+	// PlayerMaxHealth is the health a freshly spawned player starts with, and
+	// the value the health bar reads as full.
+	PlayerMaxHealth = 5
+)
+
 var (
 	// movementKeys is searched in order, so a direction listed earlier wins
 	// when several keys are held at once.
@@ -30,6 +36,7 @@ var (
 type Player struct {
 	direction Vector
 	dungeon   *Dungeon
+	health    int
 	moveTimer float32
 	position  Vector
 }
@@ -50,8 +57,17 @@ type directionKeys struct {
 func NewPlayer(dungeon *Dungeon) (player *Player) {
 	return &Player{
 		dungeon:  dungeon,
+		health:   PlayerMaxHealth,
 		position: dungeon.SpawnPoint(),
 	}
+}
+
+// Damage takes health off the player, never dropping below zero.
+//
+// Parameters:
+//   - amount: how much health to take off. A negative amount heals.
+func (this *Player) Damage(amount int) {
+	this.health = Clamp(this.health-amount, 0, PlayerMaxHealth)
 }
 
 // Draw renders the player onto screen.
@@ -67,6 +83,22 @@ func (this *Player) Draw(screen *ebiten.Image) {
 		GridSize,
 		playerColor,
 		true)
+}
+
+// Heal puts health back on the player, never rising above PlayerMaxHealth.
+//
+// Parameters:
+//   - amount: how much health to put back. A negative amount damages.
+func (this *Player) Heal(amount int) {
+	this.Damage(-amount)
+}
+
+// Health reports the health the player has left.
+//
+// Returns:
+//   - health: the health remaining, in the range [0, PlayerMaxHealth].
+func (this *Player) Health() (health int) {
+	return this.health
 }
 
 // Position reports where the player stands.

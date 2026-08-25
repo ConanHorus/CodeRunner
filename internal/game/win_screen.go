@@ -25,7 +25,7 @@ const (
 	// winLineGap is the space, in pixels, between the title and the hint.
 	winLineGap = 24
 
-	winHint  = "Press R for a new dungeon, or Esc to quit"
+	winHint  = "Press Esc to quit"
 	winTitle = "You Win!"
 )
 
@@ -38,8 +38,8 @@ var (
 )
 
 // drawWinScreen paints the screen shown once the player has stepped onto the
-// exit: the title in the exit tile's colour, with the controls that still work
-// underneath it.
+// exit: the title in the exit tile's colour, with the one control that still
+// works underneath it.
 //
 // Parameters:
 //   - screen: the destination image for this frame.
