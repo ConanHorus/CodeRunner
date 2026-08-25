@@ -3,7 +3,6 @@ package game
 
 import (
 	"fmt"
-	"image/color"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
@@ -11,38 +10,41 @@ import (
 )
 
 const (
-	// ScreenWidth is the logical width of the game screen in pixels.
-	ScreenWidth = 640
+	// GridSize is the width and height of one tile in pixels.
+	GridSize = 16
 
 	// ScreenHeight is the logical height of the game screen in pixels.
 	ScreenHeight = 480
 
-	GridSize = 16
+	// ScreenWidth is the logical width of the game screen in pixels.
+	ScreenWidth = 640
 
+	// UpdateTime is how long a held direction waits, in seconds, before the
+	// player takes another step. It is the game speed dial.
 	UpdateTime = float32(1) / 8
+
+	// initialSeed is the seed of the first level. Regenerating counts up from
+	// here, so a given level is reproducible across runs.
+	initialSeed = 3
 )
 
-var (
-	GameObjects []GameObject
-
-	backgroundColor = color.RGBA{R: 0x1E, G: 0x1E, B: 0x2E, A: 0xFF}
-	playerColor     = color.RGBA{R: 0x89, G: 0xB4, B: 0xFA, A: 0xFF}
-)
+var GameObjects []GameObject
 
 // Game holds all mutable game state and implements the ebiten.Game interface.
 type Game struct {
+	dungeon *Dungeon
+	seed    uint64
 }
 
-// New creates a Game with the player centered on screen.
+// New creates a Game holding a freshly generated level.
 //
 // Returns:
 //   - game: a ready-to-run Game.
 func New() (game *Game) {
-	player := &Player{}
-	player.SetPosition(Vector{X: (ScreenWidth - GridSize) / 2, Y: (ScreenHeight - GridSize) / 2})
-	GameObjects = append(GameObjects, &Player{})
+	game = &Game{seed: initialSeed}
+	game.generate()
 
-	return &Game{}
+	return game
 }
 
 // Draw renders the current frame onto screen.
@@ -50,7 +52,7 @@ func New() (game *Game) {
 // Parameters:
 //   - screen: the destination image for this frame.
 func (this *Game) Draw(screen *ebiten.Image) {
-	screen.Fill(backgroundColor)
+	this.dungeon.Draw(screen)
 
 	for _, gameObject := range GameObjects {
 		gameObject.Draw(screen)
@@ -59,7 +61,7 @@ func (this *Game) Draw(screen *ebiten.Image) {
 	ebitenutil.DebugPrint(
 		screen,
 		fmt.Sprintf(
-			"CodeRunner\nFPS: %.1f  TPS: %.1f\nWASD/arrows to move, space to pause, esc to quit",
+			"CodeRunner\nFPS: %.1f  TPS: %.1f\nWASD/arrows to move, R to regenerate, esc to quit",
 			ebiten.ActualFPS(),
 			ebiten.ActualTPS()))
 }
@@ -86,11 +88,26 @@ func (this *Game) Update() (err error) {
 		return ebiten.Termination
 	}
 
+	if inpututil.IsKeyJustPressed(ebiten.KeyR) {
+		this.seed++
+		this.generate()
+
+		return nil
+	}
+
 	for _, gameObject := range GameObjects {
 		gameObject.Update()
 	}
 
 	return nil
+}
+
+// generate builds a level from the current seed and repopulates the world
+// with the objects that live in it.
+func (this *Game) generate() {
+	this.dungeon = NewDungeon(this.seed)
+
+	GameObjects = []GameObject{NewPlayer(this.dungeon)}
 }
 
 // Clamp constrains value to the inclusive range [min, max].
