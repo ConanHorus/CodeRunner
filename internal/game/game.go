@@ -31,18 +31,22 @@ var (
 
 // Game holds all mutable game state and implements the ebiten.Game interface.
 type Game struct {
+	source []byte
 }
 
 // New creates a Game with the player centered on screen.
 //
+// Parameters:
+//   - source: the contents of the source file to run.
+//
 // Returns:
 //   - game: a ready-to-run Game.
-func New() (game *Game) {
+func New(source []byte) (game *Game) {
 	player := &Player{}
 	player.SetPosition(Vector{X: (ScreenWidth - GridSize) / 2, Y: (ScreenHeight - GridSize) / 2})
 	GameObjects = append(GameObjects, &Player{})
 
-	return &Game{}
+	return &Game{source: source}
 }
 
 // Draw renders the current frame onto screen.
