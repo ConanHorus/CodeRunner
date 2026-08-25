@@ -1,0 +1,1 @@
+go run token.go --key 7 <filename>
