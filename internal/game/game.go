@@ -30,8 +30,10 @@ var GameObjects []GameObject
 // Game holds all mutable game state and implements the ebiten.Game interface.
 type Game struct {
 	dungeon *Dungeon
+	player  *Player
 	seed    uint64
 	source  []byte
+	won     bool
 }
 
 // New creates a Game holding a freshly generated level.
@@ -70,6 +72,12 @@ func seedFromSource(source []byte) (seed uint64) {
 // Parameters:
 //   - screen: the destination image for this frame.
 func (this *Game) Draw(screen *ebiten.Image) {
+	if this.won {
+		drawWinScreen(screen)
+
+		return
+	}
+
 	this.dungeon.Draw(screen)
 
 	for _, gameObject := range GameObjects {
@@ -79,7 +87,7 @@ func (this *Game) Draw(screen *ebiten.Image) {
 	ebitenutil.DebugPrint(
 		screen,
 		fmt.Sprintf(
-			"CodeRunner\nFPS: %.1f  TPS: %.1f\nWASD/arrows to move, R to regenerate, esc to quit",
+			"CodeRunner\nFPS: %.1f  TPS: %.1f\nWASD/arrows to move, R to regenerate, esc to quit\nReach the green exit to win",
 			ebiten.ActualFPS(),
 			ebiten.ActualTPS()))
 }
@@ -99,6 +107,10 @@ func (this *Game) Layout(outsideWidth int, outsideHeight int) (screenWidth int, 
 
 // Update advances the game state by a single tick.
 //
+// Notes:
+//   - once the player has stepped onto the exit the level is won and the
+//     world freezes: only R and Escape are read until a new level is made.
+//
 // Returns:
 //   - err: ebiten.Termination when the player quits, otherwise nil.
 func (this *Game) Update() (err error) {
@@ -113,8 +125,17 @@ func (this *Game) Update() (err error) {
 		return nil
 	}
 
+	if this.won {
+		return nil
+	}
+
 	for _, gameObject := range GameObjects {
 		gameObject.Update()
+	}
+
+	position := this.player.Position()
+	if this.dungeon.TileAt(position.X, position.Y) == TileExit {
+		this.won = true
 	}
 
 	return nil
@@ -124,8 +145,10 @@ func (this *Game) Update() (err error) {
 // with the objects that live in it.
 func (this *Game) generate() {
 	this.dungeon = NewDungeon(this.seed)
+	this.player = NewPlayer(this.dungeon)
+	this.won = false
 
-	GameObjects = []GameObject{NewPlayer(this.dungeon)}
+	GameObjects = []GameObject{this.player}
 }
 
 // Clamp constrains value to the inclusive range [min, max].

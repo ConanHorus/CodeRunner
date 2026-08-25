@@ -12,6 +12,9 @@ const (
 
 	// TileDoor is the threshold where a corridor pierces a room wall.
 	TileDoor
+
+	// TileExit is the way out of the dungeon. Stepping onto it wins the game.
+	TileExit
 )
 
 // Tile is the contents of a single dungeon cell.

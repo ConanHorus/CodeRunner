@@ -37,6 +37,7 @@ const (
 var (
 	corridorColor = color.RGBA{R: 0x26, G: 0x26, B: 0x38, A: 0xFF}
 	doorColor     = color.RGBA{R: 0xF9, G: 0xE2, B: 0xAF, A: 0xFF}
+	exitColor     = color.RGBA{R: 0xA6, G: 0xE3, B: 0xA1, A: 0xFF}
 	floorColor    = color.RGBA{R: 0x31, G: 0x32, B: 0x44, A: 0xFF}
 	wallColor     = color.RGBA{R: 0x18, G: 0x18, B: 0x25, A: 0xFF}
 )
@@ -82,6 +83,7 @@ func NewDungeon(seed uint64) (dungeon *Dungeon) {
 	dungeon = &Dungeon{}
 	dungeon.placeRooms(random)
 	dungeon.digCorridors(dungeon.planRoutes(random), random)
+	dungeon.placeExit()
 	dungeon.render()
 
 	return dungeon
@@ -128,6 +130,22 @@ func (this *Dungeon) SpawnPoint() (spawnPoint Vector) {
 	return this.rooms[this.entrance].Center()
 }
 
+// TileAt reports the contents of the tile at x, y.
+//
+// Parameters:
+//   - x: the tile column.
+//   - y: the tile row.
+//
+// Returns:
+//   - tile: the tile, or TileWall for anything off the map.
+func (this *Dungeon) TileAt(x int, y int) (tile Tile) {
+	if x < 0 || x >= Cols || y < 0 || y >= Rows {
+		return TileWall
+	}
+
+	return this.tiles[x][y]
+}
+
 // Walkable reports whether the tile at x, y can be stood on.
 //
 // Parameters:
@@ -137,11 +155,7 @@ func (this *Dungeon) SpawnPoint() (spawnPoint Vector) {
 // Returns:
 //   - walkable: false for walls and for anything off the map.
 func (this *Dungeon) Walkable(x int, y int) (walkable bool) {
-	if x < 0 || x >= Cols || y < 0 || y >= Rows {
-		return false
-	}
-
-	return this.tiles[x][y].Walkable()
+	return this.TileAt(x, y).Walkable()
 }
 
 // carve turns a solid tile into a corridor, or into a door when it sits on the
@@ -288,6 +302,14 @@ func (this *Dungeon) isRoomWall(x int, y int) (isRoomWall bool) {
 	return false
 }
 
+// placeExit marks the centre of the exit room as the way out of the level.
+// Corridors only ever dig through solid tiles, so the room interior is still
+// floor when this runs, and the exit is reachable because the room is.
+func (this *Dungeon) placeExit() {
+	exit := this.ExitPoint()
+	this.tiles[exit.X][exit.Y] = TileExit
+}
+
 // placeRooms puts one room in every sector, in reading order, and floors it.
 //
 // Parameters:
@@ -385,6 +407,8 @@ func (this *Dungeon) render() {
 				tileColor = corridorColor
 			case TileDoor:
 				tileColor = doorColor
+			case TileExit:
+				tileColor = exitColor
 			default:
 				continue
 			}
