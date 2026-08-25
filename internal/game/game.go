@@ -34,14 +34,18 @@ var GameObjects []GameObject
 type Game struct {
 	dungeon *Dungeon
 	seed    uint64
+	source  []byte
 }
 
 // New creates a Game holding a freshly generated level.
 //
+// Parameters:
+//   - source: the contents of the source file to run.
+//
 // Returns:
 //   - game: a ready-to-run Game.
-func New() (game *Game) {
-	game = &Game{seed: initialSeed}
+func New(source []byte) (game *Game) {
+	game = &Game{seed: initialSeed, source: source}
 	game.generate()
 
 	return game
