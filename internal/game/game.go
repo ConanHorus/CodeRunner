@@ -3,6 +3,7 @@ package game
 
 import (
 	"fmt"
+	"hash/fnv"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
@@ -22,10 +23,6 @@ const (
 	// UpdateTime is how long a held direction waits, in seconds, before the
 	// player takes another step. It is the game speed dial.
 	UpdateTime = float32(1) / 8
-
-	// initialSeed is the seed of the first level. Regenerating counts up from
-	// here, so a given level is reproducible across runs.
-	initialSeed = 3
 )
 
 var GameObjects []GameObject
@@ -40,15 +37,32 @@ type Game struct {
 // New creates a Game holding a freshly generated level.
 //
 // Parameters:
-//   - source: the contents of the source file to run.
+//   - source: the contents of the source file to run. The first level's seed
+//     is derived from these bytes, so a given source always opens onto the
+//     same level.
 //
 // Returns:
 //   - game: a ready-to-run Game.
 func New(source []byte) (game *Game) {
-	game = &Game{seed: initialSeed, source: source}
+	game = &Game{seed: seedFromSource(source), source: source}
 	game.generate()
 
 	return game
+}
+
+// seedFromSource hashes source down to a seed, so that the first level is a
+// pure function of the source file's (decoded) bytes.
+//
+// Parameters:
+//   - source: the bytes to derive a seed from.
+//
+// Returns:
+//   - seed: the derived seed.
+func seedFromSource(source []byte) (seed uint64) {
+	hash := fnv.New64a()
+	hash.Write(source)
+
+	return hash.Sum64()
 }
 
 // Draw renders the current frame onto screen.
