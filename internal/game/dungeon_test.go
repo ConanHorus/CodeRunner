@@ -1,6 +1,9 @@
 package game
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 // testSeeds is how many generated levels the structural tests sweep.
 const testSeeds = 500
@@ -150,6 +153,60 @@ func TestTileAtOffMapIsWall(t *testing.T) {
 	for _, point := range []Vector{{X: -1, Y: 0}, {X: 0, Y: -1}, {X: Cols, Y: 0}, {X: 0, Y: Rows}} {
 		if tile := dungeon.TileAt(point.X, point.Y); tile != TileWall {
 			t.Errorf("TileAt(%v) = %d, want TileWall", point, tile)
+		}
+	}
+}
+
+func TestBlendSpansTheDarkToTheLitColor(t *testing.T) {
+	if blended := blend(floorColor, 1); blended != floorColor {
+		t.Errorf("blend(floorColor, 1) = %v, want the lit colour %v", blended, floorColor)
+	}
+
+	if blended := blend(floorColor, 0); blended != darkColor {
+		t.Errorf("blend(floorColor, 0) = %v, want the dark %v", blended, darkColor)
+	}
+}
+
+func TestLightLevelIsFullNearTheOriginAndNeverBelowDim(t *testing.T) {
+	dungeon := NewDungeon(3)
+	spawn := dungeon.SpawnPoint()
+
+	if level := dungeon.lightLevel(spawn.X, spawn.Y); level != 1 {
+		t.Errorf("lightLevel at the origin %v = %v, want 1", spawn, level)
+	}
+
+	if level := dungeon.lightLevel(spawn.X+lightFull, spawn.Y); level != 1 {
+		t.Errorf("lightLevel %d tiles out = %v, want 1", lightFull, level)
+	}
+
+	if level := dungeon.lightLevel(spawn.X, spawn.Y+lightRange); level != dimLevel {
+		t.Errorf("lightLevel %d tiles out = %v, want dimLevel %v", lightRange, level, dimLevel)
+	}
+
+	for y := range Rows {
+		for x := range Cols {
+			level := dungeon.lightLevel(x, y)
+
+			if level < dimLevel || level > 1 {
+				t.Fatalf("lightLevel at %d, %d = %v, want it within [%v, 1]", x, y, level, dimLevel)
+			}
+		}
+	}
+}
+
+func TestPulseLevelStaysWithinItsSwing(t *testing.T) {
+	dungeon := NewDungeon(4)
+
+	for tick := range 600 {
+		dungeon.Update()
+
+		level := dungeon.pulseLevel()
+		if level < exitPulseLow || level > 1 {
+			t.Fatalf("tick %d: pulseLevel = %v, want it within [%v, 1]", tick, level, exitPulseLow)
+		}
+
+		if dungeon.pulse < 0 || dungeon.pulse >= 2*math.Pi {
+			t.Fatalf("tick %d: pulse = %v, want it wrapped into [0, 2pi)", tick, dungeon.pulse)
 		}
 	}
 }

@@ -296,8 +296,9 @@ func (this *World) Unlock() {
 
 // Update advances the world by a single tick: the player acts first, then the
 // monsters, then the projectiles, and whatever died along the way is swept up.
-// The screen shake is advanced last so that a hit landed this tick shows up in
-// this tick's frame.
+// The level is then relit from wherever the step left the player, so that a
+// frame never has to work out what can be seen, and the screen shake is
+// advanced last so that a hit landed this tick shows up in this tick's frame.
 func (this *World) Update() {
 	this.ticks++
 
@@ -318,6 +319,8 @@ func (this *World) Update() {
 	}
 
 	this.sweep()
+	this.dungeon.Update()
+	this.dungeon.Illuminate(this.player.Position())
 	this.shake.Update()
 }
 

@@ -2,6 +2,7 @@ package game
 
 import (
 	"image/color"
+	"math"
 	"math/rand/v2"
 
 	"github.com/hajimehoshi/ebiten/v2"
@@ -21,6 +22,26 @@ const (
 	// SectorRows is the number of sectors down the dungeon.
 	SectorRows = 3
 
+	// dimLevel is the least of a tile's lit colour that is ever kept: what a
+	// remembered tile keeps, and the floor the light falloff lands on. The rest
+	// is given over to the dark the level sits on, so a dimmed tile reads as
+	// the same shape seen through the dark instead of as a different tile.
+	dimLevel = 0.45
+
+	// exitPulseLow is how much of the exit's colour is kept at the low end of
+	// its pulse, and exitPulseRate is how many full pulses it beats a second.
+	exitPulseLow  = 0.55
+	exitPulseRate = 0.7
+
+	// lightFull is how far, in tiles, light holds at full strength before it
+	// starts to fall off, and lightRange is how far it carries before it has
+	// faded all the way down to dimLevel. Holding it for the first few tiles
+	// puts a pool of proper light around the player instead of starting the
+	// fade off from under their feet. Sight itself is not range limited; this
+	// only shades what is already visible.
+	lightFull  = 4
+	lightRange = 16
+
 	// maxRoomHeight and maxRoomWidth leave a one tile wall margin inside the
 	// sector, which guarantees at least two solid tiles between the rooms of
 	// neighbouring sectors. Those two tiles are the lanes the corridors turn
@@ -32,10 +53,23 @@ const (
 	sectorCount   = SectorCols * SectorRows
 	sectorHeight  = Rows / SectorRows
 	sectorWidth   = Cols / SectorCols
+
+	// tileSeam is how many pixels of the dark ground are left showing along
+	// the right and bottom of every dug tile, which draws the grid the level
+	// is laid out on and gives the floor some texture to move across. Walls
+	// are painted whole, so they still read as solid rock.
+	tileSeam = 1
+
+	// wallEdgeHeight is how many pixels of the lit lip are painted along the
+	// bottom of a wall that has dug ground below it. That is the one wall face
+	// a level seen from above would show, and picking it out is what keeps a
+	// room reading as a space rather than as a hole cut out of the dark.
+	wallEdgeHeight = 3
 )
 
 var (
 	corridorColor   = color.RGBA{R: 0x26, G: 0x26, B: 0x38, A: 0xFF}
+	darkColor       = color.RGBA{R: 0x0B, G: 0x0B, B: 0x11, A: 0xFF}
 	doorColor       = color.RGBA{R: 0xF9, G: 0xE2, B: 0xAF, A: 0xFF}
 	exitColor       = color.RGBA{R: 0xA6, G: 0xE3, B: 0xA1, A: 0xFF}
 	floorColor      = color.RGBA{R: 0x31, G: 0x32, B: 0x44, A: 0xFF}
@@ -43,6 +77,7 @@ var (
 	lockedDoorColor = color.RGBA{R: 0xF3, G: 0x8B, B: 0xA8, A: 0xFF}
 	sealedExitColor = color.RGBA{R: 0x58, G: 0x5B, B: 0x70, A: 0xFF}
 	wallColor       = color.RGBA{R: 0x18, G: 0x18, B: 0x25, A: 0xFF}
+	wallEdgeColor   = color.RGBA{R: 0x45, G: 0x47, B: 0x5A, A: 0xFF}
 )
 
 // Dungeon is a generated level in the style of Rogue laid out as a maze: the
@@ -59,13 +94,20 @@ var (
 // out as a locked door, so nothing gets in or out until Unlock is called.
 // The exit itself starts sealed and only opens when OpenExit is called, which
 // the world does once the boss has fallen.
+//
+// Tiles in sight of the viewpoint are rendered lit, fading with distance from
+// it, tiles that have been in sight of an earlier viewpoint are rendered dim,
+// and everything else is dark. The viewpoint is set with Illuminate, and the
+// level is spawn lit until then.
 type Dungeon struct {
 	entrance    int
 	exit        int
 	image       *ebiten.Image
 	links       [][]int
 	lockedDoors []Vector
+	pulse       float32
 	rooms       []Rect
+	sight       *LineOfSight
 	tiles       [Cols][Rows]Tile
 }
 
@@ -92,11 +134,12 @@ func NewDungeon(seed uint64) (dungeon *Dungeon) {
 	random := rand.New(rand.NewPCG(seed, 0x9E3779B97F4A7C15))
 
 	dungeon = &Dungeon{}
+	dungeon.sight = NewLineOfSight(dungeon.blocksSight)
 	dungeon.placeRooms(random)
 	dungeon.digCorridors(dungeon.planRoutes(random), random)
 	dungeon.lockBossRoom()
 	dungeon.placeExit()
-	dungeon.render()
+	dungeon.Illuminate(dungeon.SpawnPoint())
 
 	return dungeon
 }
@@ -136,12 +179,35 @@ func (this *Dungeon) Dispose() {
 	this.image = nil
 }
 
-// Draw blits the pre-rendered level onto screen.
+// Draw blits the pre-rendered level onto screen, then repaints the exit on top
+// of it at this tick's pulse.
+//
+// Notes:
+//   - the exit is the one tile painted per frame rather than baked, and the one
+//     tile the light falloff is not applied to. It is the way out, so it is
+//     drawn as something giving off light rather than as something lit.
+//   - a remembered exit is left as the bake has it. Memory does not pulse.
+//   - only an open exit beats. While it is still sealed the bake has it, so it
+//     reads as the barred way out it is rather than giving itself away.
 //
 // Parameters:
 //   - screen: the destination image for this frame.
 func (this *Dungeon) Draw(screen *ebiten.Image) {
 	screen.DrawImage(this.image, nil)
+
+	exit := this.ExitPoint()
+	if !this.ExitOpen() || !this.sight.Visible(exit.X, exit.Y) {
+		return
+	}
+
+	vector.DrawFilledRect(
+		screen,
+		float32(exit.X*GridSize),
+		float32(exit.Y*GridSize),
+		GridSize-tileSeam,
+		GridSize-tileSeam,
+		blend(exitColor, this.pulseLevel()),
+		false)
 }
 
 // Entrance reports which room the player starts in.
@@ -176,6 +242,25 @@ func (this *Dungeon) ExitOpen() (open bool) {
 //   - exitPoint: the centre tile of the room furthest from the entrance.
 func (this *Dungeon) ExitPoint() (exitPoint Vector) {
 	return this.rooms[this.exit].Center()
+}
+
+// Illuminate moves the viewpoint the level is seen from, hiding whatever has
+// fallen out of sight and revealing whatever has come into it.
+//
+// Notes:
+//   - the level is re-rendered here rather than every frame, so a viewpoint
+//     that has not moved costs nothing.
+//
+// Parameters:
+//   - origin: the tile the level is seen from. Everything goes dark when it
+//     lies off the map.
+func (this *Dungeon) Illuminate(origin Vector) {
+	if this.image != nil && origin == this.sight.Origin() {
+		return
+	}
+
+	this.sight.LookFrom(origin)
+	this.render()
 }
 
 // Locked reports whether the boss room is still sealed off.
@@ -268,6 +353,15 @@ func (this *Dungeon) Unlock() {
 	this.render()
 }
 
+// Update advances the exit beacon by a single tick. Nothing else about a level
+// moves, so a dungeon that is never updated simply holds the beacon still.
+func (this *Dungeon) Update() {
+	this.pulse += 2 * math.Pi * exitPulseRate / float32(ebiten.TPS())
+	if this.pulse >= 2*math.Pi {
+		this.pulse -= 2 * math.Pi
+	}
+}
+
 // Walkable reports whether the tile at x, y can be stood on.
 //
 // Parameters:
@@ -279,6 +373,19 @@ func (this *Dungeon) Unlock() {
 //     off the map.
 func (this *Dungeon) Walkable(x int, y int) (walkable bool) {
 	return this.TileAt(x, y).Walkable()
+}
+
+// blocksSight reports whether the tile at x, y stops sight passing through it.
+//
+// Parameters:
+//   - x: the tile column.
+//   - y: the tile row.
+//
+// Returns:
+//   - blocksSight: true for walls, which are the only tiles sight cannot cross.
+//     A wall is still seen itself; only what lies behind it is hidden.
+func (this *Dungeon) blocksSight(x int, y int) (blocksSight bool) {
+	return this.TileAt(x, y) == TileWall
 }
 
 // carve turns a solid tile into a corridor, or into a door when it sits on the
@@ -425,6 +532,39 @@ func (this *Dungeon) isRoomWall(x int, y int) (isRoomWall bool) {
 	return false
 }
 
+// lightLevel reports how brightly a tile in sight is painted. Light holds at
+// full strength for lightFull tiles and then falls off with distance, so a room
+// reads as lit from where the player stands rather than as a flat slab.
+//
+// Notes:
+//   - the level never falls below dimLevel, so sight is never dimmer than
+//     memory and the falloff never hides anything the player can see. Sight
+//     stays unlimited in range; only its brightness is graded.
+//
+// Parameters:
+//   - x: the tile column.
+//   - y: the tile row.
+//
+// Returns:
+//   - level: how much of the tile's lit colour to keep, in the range
+//     [dimLevel, 1].
+func (this *Dungeon) lightLevel(x int, y int) (level float32) {
+	origin := this.sight.Origin()
+	distance := float32(math.Hypot(float64(x-origin.X), float64(y-origin.Y)))
+
+	if distance <= lightFull {
+		return 1
+	}
+
+	level = 1 - (distance-lightFull)/(lightRange-lightFull)*(1-dimLevel)
+
+	if level < dimLevel {
+		return dimLevel
+	}
+
+	return level
+}
+
 // lockBossRoom turns every walkable tile on the boss room's wall ring into a
 // locked door.
 //
@@ -544,48 +684,88 @@ func (this *Dungeon) planRoutes(random *rand.Rand) (edges []edge) {
 	return edges
 }
 
-// render bakes the tile grid into a single image so that drawing a frame costs
-// one blit instead of one filled rectangle per tile. It is run again whenever
-// a door unlocks or the exit opens, reusing the same image.
+// pulseLevel reports how bright the exit beacon is on this tick.
+//
+// Returns:
+//   - level: how much of the exit's colour to keep, swinging between
+//     exitPulseLow and 1.
+func (this *Dungeon) pulseLevel() (level float32) {
+	wave := (1 + float32(math.Sin(float64(this.pulse)))) / 2
+
+	return exitPulseLow + (1-exitPulseLow)*wave
+}
+
+// render bakes the tiles the viewpoint can see, and the dimmed tiles it
+// remembers, into a single image over a dark ground, so that drawing a frame
+// costs one blit instead of one filled rectangle per tile. The image is kept
+// and repainted rather than replaced, so moving the viewpoint does not leave a
+// dead image behind every step. It is run again whenever a door unlocks or the
+// exit opens.
+//
+// Notes:
+//   - a dug tile is painted a seam short of its cell so the dark ground shows
+//     through as a grid, and a wall with dug ground below it gets a lit lip
+//     along that edge.
+//   - the keyhole on a locked door and the seal across a closed exit are
+//     painted over the tile once it is down, so they ride whatever light level
+//     the tile was painted at.
 func (this *Dungeon) render() {
 	if this.image == nil {
 		this.image = ebiten.NewImage(ScreenWidth, ScreenHeight)
 	}
 
-	this.image.Fill(wallColor)
+	this.image.Fill(darkColor)
 
 	for y := range Rows {
 		for x := range Cols {
-			var tileColor color.RGBA
+			var level float32
 
-			switch this.tiles[x][y] {
-			case TileFloor:
-				tileColor = floorColor
-			case TileCorridor:
-				tileColor = corridorColor
-			case TileDoor:
-				tileColor = doorColor
-			case TileExit:
-				tileColor = exitColor
-			case TileLockedDoor:
-				tileColor = lockedDoorColor
-			case TileExitSealed:
-				tileColor = sealedExitColor
+			switch {
+			case this.sight.Visible(x, y):
+				level = this.lightLevel(x, y)
+			case this.sight.Explored(x, y):
+				level = dimLevel
 			default:
 				continue
 			}
 
+			tile := this.tiles[x][y]
 			left := float32(x * GridSize)
 			top := float32(y * GridSize)
+			size := float32(GridSize - tileSeam)
 
-			vector.DrawFilledRect(this.image, left, top, GridSize, GridSize, tileColor, false)
+			if tile == TileWall {
+				size = GridSize
+			}
 
-			switch this.tiles[x][y] {
+			vector.DrawFilledRect(
+				this.image,
+				left,
+				top,
+				size,
+				size,
+				blend(tileColor(tile), level),
+				false)
+
+			switch tile {
 			case TileLockedDoor:
 				renderKeyhole(this.image, left, top)
 			case TileExitSealed:
 				renderSeal(this.image, left, top)
 			}
+
+			if tile != TileWall || this.TileAt(x, y+1) == TileWall {
+				continue
+			}
+
+			vector.DrawFilledRect(
+				this.image,
+				left,
+				float32((y+1)*GridSize-wallEdgeHeight),
+				GridSize,
+				wallEdgeHeight,
+				blend(wallEdgeColor, level),
+				false)
 		}
 	}
 }
@@ -628,6 +808,26 @@ func allEdges() (edges []edge) {
 	}
 
 	return edges
+}
+
+// blend fades a lit colour towards the dark the level sits on. It is what both
+// the light falloff and the dimming of memory are painted with, so a tile only
+// ever differs from its lit self by how much of the dark it has taken on.
+//
+// Parameters:
+//   - lit: the colour the tile is painted at full brightness.
+//   - level: how much of that colour to keep, from 0 for the bare dark through
+//     to 1 for the lit colour untouched.
+//
+// Returns:
+//   - blended: the colour to paint.
+func blend(lit color.RGBA, level float32) (blended color.RGBA) {
+	return color.RGBA{
+		R: fade(lit.R, darkColor.R, level),
+		G: fade(lit.G, darkColor.G, level),
+		B: fade(lit.B, darkColor.B, level),
+		A: lit.A,
+	}
 }
 
 // crosses reports whether two sets of joins have a join in common.
@@ -725,6 +925,20 @@ func roomDistances(links [][]int, from int) (distances []int) {
 	}
 
 	return distances
+}
+
+// fade mixes one channel of a lit colour into the same channel of the dark.
+//
+// Parameters:
+//   - lit: the channel value of the lit colour.
+//   - dark: the channel value of the dark the level sits on.
+//   - level: how much of the lit channel to keep, in the range [0, 1].
+//
+// Returns:
+//   - faded: the channel value level of the way from dark to lit, which always
+//     lands between the two whichever of them is the brighter.
+func fade(lit uint8, dark uint8, level float32) (faded uint8) {
+	return uint8(float32(dark) + (float32(lit)-float32(dark))*level)
 }
 
 // routeEdges walks the one route a tree holds between two rooms.
@@ -841,4 +1055,33 @@ func spanningTree(random *rand.Rand) (edges []edge) {
 	}
 
 	return edges
+}
+
+// tileColor reports the colour a tile is painted when it can be seen.
+//
+// Parameters:
+//   - tile: the tile to paint.
+//
+// Returns:
+//   - tileColor: the colour for that tile. Corridors and doors are painted as
+//     floor, so a passage reads as part of the same dug space as the rooms it
+//     joins rather than as something laid over them. Only the exit is picked
+//     out, because it is the one tile worth spotting from across a room.
+func tileColor(tile Tile) (tileColor color.RGBA) {
+	switch tile {
+	case TileCorridor:
+		return corridorColor
+	case TileDoor:
+		return doorColor
+	case TileExit:
+		return exitColor
+	case TileExitSealed:
+		return sealedExitColor
+	case TileFloor:
+		return floorColor
+	case TileLockedDoor:
+		return lockedDoorColor
+	default:
+		return wallColor
+	}
 }

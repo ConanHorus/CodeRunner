@@ -40,6 +40,7 @@ const (
 type Game struct {
 	buffer *ebiten.Image
 	seed   uint64
+	sounds *Sounds
 	source []byte
 	state  gameState
 	world  *World
@@ -63,6 +64,7 @@ func New(source []byte) (game *Game) {
 	return &Game{
 		buffer: ebiten.NewImage(ScreenWidth, ScreenHeight),
 		seed:   seed,
+		sounds: NewSounds(),
 		source: source,
 		world:  NewWorld(seed),
 	}
@@ -86,6 +88,9 @@ func seedFromSource(source []byte) (seed uint64) {
 // Draw renders the current frame onto screen.
 //
 // Notes:
+//   - the tiles the player can see are drawn lit, fading off with distance,
+//     and the ones already walked past are drawn dim. Everything else is dark,
+//     including the gutter the screen shake opens up at the edges.
 //   - the world is drawn into an offscreen buffer and then blitted across at
 //     the screen shake's offset, so the shake moves the level as one piece.
 //     The heads up display is drawn straight onto the screen afterwards and so
@@ -112,7 +117,7 @@ func (this *Game) Draw(screen *ebiten.Image) {
 	options := &ebiten.DrawImageOptions{}
 	options.GeoM.Translate(float64(offsetX), float64(offsetY))
 
-	screen.Fill(wallColor)
+	screen.Fill(darkColor)
 	screen.DrawImage(this.buffer, options)
 
 	drawHUD(screen, this.world)
@@ -145,7 +150,10 @@ func (this *Game) Layout(outsideWidth int, outsideHeight int) (screenWidth int, 
 // Notes:
 //   - once the player has stepped onto the open exit, or run out of health,
 //     the run is over and the world freezes: only Escape and R, which starts
-//     the same level over, are read after that.
+//     the same level over, are read after that. The win chime is started on
+//     the tick the level is won, and plays on over the win screen.
+//   - what the player can see is worked out as the world steps, from wherever
+//     the step left the player, so a frame never has to pay for it.
 //
 // Returns:
 //   - err: ebiten.Termination when the player quits, otherwise nil.
@@ -172,6 +180,8 @@ func (this *Game) Update() (err error) {
 		this.state = stateDead
 	case this.world.Dungeon().TileAt(position.X, position.Y) == TileExit:
 		this.state = stateWon
+
+		this.sounds.PlayWin()
 	}
 
 	return nil
