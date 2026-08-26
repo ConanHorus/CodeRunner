@@ -35,6 +35,7 @@ type World struct {
 	projectiles  []*Projectile
 	random       *rand.Rand
 	shake        *ScreenShake
+	sounds       *Sounds
 	ticks        int
 }
 
@@ -242,12 +243,35 @@ func (this *World) Random() (random *rand.Rand) {
 	return this.random
 }
 
+// SetSounds hands the world the sound effects to play as things happen in it.
+//
+// Notes:
+//   - the world is generated before anything is handed to it, and the tests
+//     never hand it sound at all, so the sounds stay nil until the game sets
+//     them. Every play goes through *Sounds methods, which are silent on a nil
+//     Sounds.
+//
+// Parameters:
+//   - sounds: the game's sound effects.
+func (this *World) SetSounds(sounds *Sounds) {
+	this.sounds = sounds
+}
+
 // Shake reports the screen shake the world drives.
 //
 // Returns:
 //   - shake: the shake, for the caller to read the offset from.
 func (this *World) Shake() (shake *ScreenShake) {
 	return this.shake
+}
+
+// Sounds reports the sound effects to play as things happen in the world.
+//
+// Returns:
+//   - sounds: the effects, or nil when the world was built without sound. The
+//     nil is safe to play from.
+func (this *World) Sounds() (sounds *Sounds) {
+	return this.sounds
 }
 
 // SpawnProjectile launches a projectile into the world.

@@ -125,3 +125,29 @@ func TestWinCheerDecodes(t *testing.T) {
 		t.Error("win cheer decoded to no audio at all")
 	}
 }
+
+func TestGunShotDecodes(t *testing.T) {
+	stream, err := wav.DecodeF32(bytes.NewReader(assets.GunShot))
+	if err != nil {
+		t.Fatalf("the embedded gun shot will not decode: %v", err)
+	}
+
+	if rate := stream.SampleRate(); rate != SampleRate {
+		t.Errorf("gun shot is %d Hz, want %d: the decoder does not resample, so it would play at the wrong pitch", rate, SampleRate)
+	}
+
+	if stream.Length() == 0 {
+		t.Error("gun shot decoded to no audio at all")
+	}
+}
+
+func TestNilSoundsAreSilentRatherThanFatal(t *testing.T) {
+	var sounds *Sounds
+
+	sounds.PlayShot()
+	sounds.PlayWin()
+}
+
+func TestPlayOfNothing(t *testing.T) {
+	play(nil)
+}
