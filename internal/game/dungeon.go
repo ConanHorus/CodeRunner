@@ -68,12 +68,16 @@ const (
 )
 
 var (
-	darkColor  = color.RGBA{R: 0x0B, G: 0x0B, B: 0x11, A: 0xFF}
-	exitColor  = color.RGBA{R: 0xA6, G: 0xE3, B: 0xA1, A: 0xFF}
-	floorColor = color.RGBA{R: 0x31, G: 0x32, B: 0x44, A: 0xFF}
-	wallColor  = color.RGBA{R: 0x18, G: 0x18, B: 0x25, A: 0xFF}
-
-	wallEdgeColor = color.RGBA{R: 0x45, G: 0x47, B: 0x5A, A: 0xFF}
+	corridorColor   = color.RGBA{R: 0x26, G: 0x26, B: 0x38, A: 0xFF}
+	darkColor       = color.RGBA{R: 0x0B, G: 0x0B, B: 0x11, A: 0xFF}
+	doorColor       = color.RGBA{R: 0xF9, G: 0xE2, B: 0xAF, A: 0xFF}
+	exitColor       = color.RGBA{R: 0xA6, G: 0xE3, B: 0xA1, A: 0xFF}
+	floorColor      = color.RGBA{R: 0x31, G: 0x32, B: 0x44, A: 0xFF}
+	keyholeColor    = color.RGBA{R: 0x11, G: 0x11, B: 0x1B, A: 0xFF}
+	lockedDoorColor = color.RGBA{R: 0xF3, G: 0x8B, B: 0xA8, A: 0xFF}
+	sealedExitColor = color.RGBA{R: 0x58, G: 0x5B, B: 0x70, A: 0xFF}
+	wallColor       = color.RGBA{R: 0x18, G: 0x18, B: 0x25, A: 0xFF}
+	wallEdgeColor   = color.RGBA{R: 0x45, G: 0x47, B: 0x5A, A: 0xFF}
 )
 
 // Dungeon is a generated level in the style of Rogue laid out as a maze: the
@@ -85,18 +89,26 @@ var (
 // sector, so the level is connected by construction and no reachability pass
 // is needed.
 //
+// The exit room doubles as the boss room. It is always a dead end with a
+// single corridor into it, and every walkable tile on its wall ring starts
+// out as a locked door, so nothing gets in or out until Unlock is called.
+// The exit itself starts sealed and only opens when OpenExit is called, which
+// the world does once the boss has fallen.
+//
 // Tiles in sight of the viewpoint are rendered lit, fading with distance from
 // it, tiles that have been in sight of an earlier viewpoint are rendered dim,
 // and everything else is dark. The viewpoint is set with Illuminate, and the
 // level is spawn lit until then.
 type Dungeon struct {
-	entrance int
-	exit     int
-	image    *ebiten.Image
-	pulse    float32
-	rooms    []Rect
-	sight    *LineOfSight
-	tiles    [Cols][Rows]Tile
+	entrance    int
+	exit        int
+	image       *ebiten.Image
+	links       [][]int
+	lockedDoors []Vector
+	pulse       float32
+	rooms       []Rect
+	sight       *LineOfSight
+	tiles       [Cols][Rows]Tile
 }
 
 // edge is a join between two neighbouring rooms, held with the lower room
@@ -125,6 +137,7 @@ func NewDungeon(seed uint64) (dungeon *Dungeon) {
 	dungeon.sight = NewLineOfSight(dungeon.blocksSight)
 	dungeon.placeRooms(random)
 	dungeon.digCorridors(dungeon.planRoutes(random), random)
+	dungeon.lockBossRoom()
 	dungeon.placeExit()
 	dungeon.Illuminate(dungeon.SpawnPoint())
 
@@ -147,6 +160,25 @@ func newEdge(a int, b int) (join edge) {
 	return edge{from: a, to: b}
 }
 
+// BossRoom reports the room the boss guards, which is also the exit room.
+//
+// Returns:
+//   - room: the extents of the boss room.
+func (this *Dungeon) BossRoom() (room Rect) {
+	return this.rooms[this.exit]
+}
+
+// Dispose releases the pre-rendered level image. The dungeon must not be
+// drawn again afterwards.
+func (this *Dungeon) Dispose() {
+	if this.image == nil {
+		return
+	}
+
+	this.image.Deallocate()
+	this.image = nil
+}
+
 // Draw blits the pre-rendered level onto screen, then repaints the exit on top
 // of it at this tick's pulse.
 //
@@ -155,6 +187,8 @@ func newEdge(a int, b int) (join edge) {
 //     tile the light falloff is not applied to. It is the way out, so it is
 //     drawn as something giving off light rather than as something lit.
 //   - a remembered exit is left as the bake has it. Memory does not pulse.
+//   - only an open exit beats. While it is still sealed the bake has it, so it
+//     reads as the barred way out it is rather than giving itself away.
 //
 // Parameters:
 //   - screen: the destination image for this frame.
@@ -162,7 +196,7 @@ func (this *Dungeon) Draw(screen *ebiten.Image) {
 	screen.DrawImage(this.image, nil)
 
 	exit := this.ExitPoint()
-	if !this.sight.Visible(exit.X, exit.Y) {
+	if !this.ExitOpen() || !this.sight.Visible(exit.X, exit.Y) {
 		return
 	}
 
@@ -174,6 +208,32 @@ func (this *Dungeon) Draw(screen *ebiten.Image) {
 		GridSize-tileSeam,
 		blend(exitColor, this.pulseLevel()),
 		false)
+}
+
+// Entrance reports which room the player starts in.
+//
+// Returns:
+//   - room: the index of the entrance room.
+func (this *Dungeon) Entrance() (room int) {
+	return this.entrance
+}
+
+// Exit reports which room holds the exit, which is the boss room.
+//
+// Returns:
+//   - room: the index of the exit room.
+func (this *Dungeon) Exit() (room int) {
+	return this.exit
+}
+
+// ExitOpen reports whether the exit has been unsealed.
+//
+// Returns:
+//   - open: true once OpenExit has been called.
+func (this *Dungeon) ExitOpen() (open bool) {
+	exit := this.ExitPoint()
+
+	return this.tiles[exit.X][exit.Y] == TileExit
 }
 
 // ExitPoint reports the far end of the maze.
@@ -203,6 +263,60 @@ func (this *Dungeon) Illuminate(origin Vector) {
 	this.render()
 }
 
+// Locked reports whether the boss room is still sealed off.
+//
+// Returns:
+//   - locked: true until Unlock has been called.
+func (this *Dungeon) Locked() (locked bool) {
+	return len(this.lockedDoors) > 0
+}
+
+// LockedDoors reports every tile currently holding a locked door.
+//
+// Returns:
+//   - doors: a copy of the locked door positions, empty once unlocked.
+func (this *Dungeon) LockedDoors() (doors []Vector) {
+	return append([]Vector(nil), this.lockedDoors...)
+}
+
+// OpenExit unseals the exit so that the player can step onto it and win.
+func (this *Dungeon) OpenExit() {
+	exit := this.ExitPoint()
+	this.tiles[exit.X][exit.Y] = TileExit
+	this.render()
+}
+
+// Room reports the extents of one room.
+//
+// Parameters:
+//   - index: the room index, in the range [0, RoomCount()).
+//
+// Returns:
+//   - room: the room's extents.
+func (this *Dungeon) Room(index int) (room Rect) {
+	return this.rooms[index]
+}
+
+// RoomCount reports how many rooms the level holds.
+//
+// Returns:
+//   - count: the number of rooms, one per sector.
+func (this *Dungeon) RoomCount() (count int) {
+	return len(this.rooms)
+}
+
+// RoomDistances measures how many corridors away every room is from one room.
+//
+// Parameters:
+//   - room: the room to measure from.
+//
+// Returns:
+//   - distances: for every room index, the fewest corridors walked to reach
+//     it from room. Every room is reachable, so no entry is negative.
+func (this *Dungeon) RoomDistances(room int) (distances []int) {
+	return roomDistances(this.links, room)
+}
+
 // SpawnPoint reports where a new player should start.
 //
 // Returns:
@@ -228,6 +342,17 @@ func (this *Dungeon) TileAt(x int, y int) (tile Tile) {
 	return this.tiles[x][y]
 }
 
+// Unlock turns every locked door into an ordinary door, opening the boss
+// room to the player and letting the boss out after them.
+func (this *Dungeon) Unlock() {
+	for _, door := range this.lockedDoors {
+		this.tiles[door.X][door.Y] = TileDoor
+	}
+
+	this.lockedDoors = nil
+	this.render()
+}
+
 // Update advances the exit beacon by a single tick. Nothing else about a level
 // moves, so a dungeon that is never updated simply holds the beacon still.
 func (this *Dungeon) Update() {
@@ -244,7 +369,8 @@ func (this *Dungeon) Update() {
 //   - y: the tile row.
 //
 // Returns:
-//   - walkable: false for walls and for anything off the map.
+//   - walkable: false for walls, locked doors, the sealed exit and anything
+//     off the map.
 func (this *Dungeon) Walkable(x int, y int) (walkable bool) {
 	return this.TileAt(x, y).Walkable()
 }
@@ -439,12 +565,36 @@ func (this *Dungeon) lightLevel(x int, y int) (level float32) {
 	return level
 }
 
-// placeExit marks the centre of the exit room as the way out of the level.
-// Corridors only ever dig through solid tiles, so the room interior is still
-// floor when this runs, and the exit is reachable because the room is.
+// lockBossRoom turns every walkable tile on the boss room's wall ring into a
+// locked door.
+//
+// Notes:
+//   - the boss room has a single corridor, but that corridor can run along
+//     the ring for a stretch when the room sits flush against its sector
+//     lane, leaving a strip of door tiles rather than one. Locking the whole
+//     ring rather than a single tile seals the room whichever shape the
+//     opening took: every tile next to the room interior is on the ring.
+func (this *Dungeon) lockBossRoom() {
+	room := this.rooms[this.exit]
+
+	for y := room.Y - 1; y <= room.Bottom(); y++ {
+		for x := room.X - 1; x <= room.Right(); x++ {
+			if room.Contains(Vector{X: x, Y: y}) || !this.tiles[x][y].Walkable() {
+				continue
+			}
+
+			this.tiles[x][y] = TileLockedDoor
+			this.lockedDoors = append(this.lockedDoors, Vector{X: x, Y: y})
+		}
+	}
+}
+
+// placeExit marks the centre of the exit room as the sealed way out of the
+// level. Corridors only ever dig through solid tiles, so the room interior is
+// still floor when this runs, and the exit is reachable because the room is.
 func (this *Dungeon) placeExit() {
 	exit := this.ExitPoint()
-	this.tiles[exit.X][exit.Y] = TileExit
+	this.tiles[exit.X][exit.Y] = TileExitSealed
 }
 
 // placeRooms puts one room in every sector, in reading order, and floors it.
@@ -486,6 +636,11 @@ func (this *Dungeon) placeRooms(random *rand.Rand) {
 //     part of that route, so it always opens a genuine second way from the
 //     entrance to the exit rather than a loop off to one side. Two routes is
 //     the most the level ever has.
+//   - the extra join is never allowed to touch the exit room, so the exit
+//     room keeps the single corridor the tree gave it. That is what lets a
+//     lock on its wall ring seal it completely, and what guarantees that
+//     every other room, the key's room included, can be reached without
+//     passing through it.
 //
 // Parameters:
 //   - random: the source the tree walk and the extra join are drawn from.
@@ -509,7 +664,7 @@ func (this *Dungeon) planRoutes(random *rand.Rand) (edges []edge) {
 	var candidates []edge
 
 	for _, candidate := range allEdges() {
-		if used[candidate] {
+		if used[candidate] || candidate.from == this.exit || candidate.to == this.exit {
 			continue
 		}
 
@@ -523,6 +678,8 @@ func (this *Dungeon) planRoutes(random *rand.Rand) (edges []edge) {
 	if len(candidates) > 0 {
 		edges = append(edges, candidates[random.IntN(len(candidates))])
 	}
+
+	this.links = adjacency(edges)
 
 	return edges
 }
@@ -542,12 +699,16 @@ func (this *Dungeon) pulseLevel() (level float32) {
 // remembers, into a single image over a dark ground, so that drawing a frame
 // costs one blit instead of one filled rectangle per tile. The image is kept
 // and repainted rather than replaced, so moving the viewpoint does not leave a
-// dead image behind every step.
+// dead image behind every step. It is run again whenever a door unlocks or the
+// exit opens.
 //
 // Notes:
 //   - a dug tile is painted a seam short of its cell so the dark ground shows
 //     through as a grid, and a wall with dug ground below it gets a lit lip
 //     along that edge.
+//   - the keyhole on a locked door and the seal across a closed exit are
+//     painted over the tile once it is down, so they ride whatever light level
+//     the tile was painted at.
 func (this *Dungeon) render() {
 	if this.image == nil {
 		this.image = ebiten.NewImage(ScreenWidth, ScreenHeight)
@@ -569,6 +730,8 @@ func (this *Dungeon) render() {
 			}
 
 			tile := this.tiles[x][y]
+			left := float32(x * GridSize)
+			top := float32(y * GridSize)
 			size := float32(GridSize - tileSeam)
 
 			if tile == TileWall {
@@ -577,12 +740,19 @@ func (this *Dungeon) render() {
 
 			vector.DrawFilledRect(
 				this.image,
-				float32(x*GridSize),
-				float32(y*GridSize),
+				left,
+				top,
 				size,
 				size,
 				blend(tileColor(tile), level),
 				false)
+
+			switch tile {
+			case TileLockedDoor:
+				renderKeyhole(this.image, left, top)
+			case TileExitSealed:
+				renderSeal(this.image, left, top)
+			}
 
 			if tile != TileWall || this.TileAt(x, y+1) == TileWall {
 				continue
@@ -590,7 +760,7 @@ func (this *Dungeon) render() {
 
 			vector.DrawFilledRect(
 				this.image,
-				float32(x*GridSize),
+				left,
 				float32((y+1)*GridSize-wallEdgeHeight),
 				GridSize,
 				wallEdgeHeight,
@@ -688,22 +858,61 @@ func crosses(cycle map[edge]bool, route map[edge]bool) (crosses bool) {
 //   - farthest: the index of the most distant room, which in a tree is always
 //     a dead end room.
 func farthest(links [][]int, from int) (farthest int) {
-	distances := make([]int, len(links))
+	distances := roomDistances(links, from)
+	farthest = from
+
+	for room, distance := range distances {
+		if distance > distances[farthest] {
+			farthest = room
+		}
+	}
+
+	return farthest
+}
+
+// renderKeyhole draws the keyhole that marks a locked door tile.
+//
+// Parameters:
+//   - image: the level image to draw on.
+//   - left: the tile's left edge, in pixels.
+//   - top: the tile's top edge, in pixels.
+func renderKeyhole(image *ebiten.Image, left float32, top float32) {
+	vector.DrawFilledCircle(image, left+GridSize/2, top+6, 2.5, keyholeColor, true)
+	vector.DrawFilledRect(image, left+GridSize/2-1, top+7, 2, 5, keyholeColor, false)
+}
+
+// renderSeal draws the cross that marks the exit as still sealed.
+//
+// Parameters:
+//   - image: the level image to draw on.
+//   - left: the tile's left edge, in pixels.
+//   - top: the tile's top edge, in pixels.
+func renderSeal(image *ebiten.Image, left float32, top float32) {
+	vector.StrokeLine(image, left+3, top+3, left+GridSize-3, top+GridSize-3, 2, keyholeColor, true)
+	vector.StrokeLine(image, left+GridSize-3, top+3, left+3, top+GridSize-3, 2, keyholeColor, true)
+}
+
+// roomDistances measures how many joins away every room is from one room.
+//
+// Parameters:
+//   - links: the neighbour lookup for the level.
+//   - from: the room to measure from.
+//
+// Returns:
+//   - distances: for every room index, the fewest joins walked to reach it
+//     from the starting room, or -1 if it cannot be reached.
+func roomDistances(links [][]int, from int) (distances []int) {
+	distances = make([]int, len(links))
 	for index := range distances {
 		distances[index] = -1
 	}
 
 	distances[from] = 0
-	farthest = from
 	queue := []int{from}
 
 	for len(queue) > 0 {
 		current := queue[0]
 		queue = queue[1:]
-
-		if distances[current] > distances[farthest] {
-			farthest = current
-		}
 
 		for _, next := range links[current] {
 			if distances[next] >= 0 {
@@ -715,7 +924,7 @@ func farthest(links [][]int, from int) (farthest int) {
 		}
 	}
 
-	return farthest
+	return distances
 }
 
 // fade mixes one channel of a lit colour into the same channel of the dark.
@@ -860,10 +1069,18 @@ func spanningTree(random *rand.Rand) (edges []edge) {
 //     out, because it is the one tile worth spotting from across a room.
 func tileColor(tile Tile) (tileColor color.RGBA) {
 	switch tile {
-	case TileFloor, TileCorridor, TileDoor:
-		return floorColor
+	case TileCorridor:
+		return corridorColor
+	case TileDoor:
+		return doorColor
 	case TileExit:
 		return exitColor
+	case TileExitSealed:
+		return sealedExitColor
+	case TileFloor:
+		return floorColor
+	case TileLockedDoor:
+		return lockedDoorColor
 	default:
 		return wallColor
 	}
