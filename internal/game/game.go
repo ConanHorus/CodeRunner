@@ -32,8 +32,10 @@ type Game struct {
 	dungeon *Dungeon
 	player  *Player
 	seed    uint64
+	shake   *ScreenShake
 	source  []byte
 	won     bool
+	world   *ebiten.Image
 }
 
 // New creates a Game holding a freshly generated level.
@@ -46,8 +48,19 @@ type Game struct {
 // Returns:
 //   - game: a ready-to-run Game.
 func New(source []byte) (game *Game) {
-	game = &Game{seed: seedFromSource(source), source: source}
-	game.generate()
+	seed := seedFromSource(source)
+	dungeon := NewDungeon(seed)
+
+	game = &Game{
+		dungeon: dungeon,
+		player:  NewPlayer(dungeon),
+		seed:    seed,
+		shake:   NewScreenShake(),
+		source:  source,
+		world:   ebiten.NewImage(ScreenWidth, ScreenHeight),
+	}
+
+	GameObjects = []GameObject{game.player}
 
 	return game
 }
@@ -69,6 +82,12 @@ func seedFromSource(source []byte) (seed uint64) {
 
 // Draw renders the current frame onto screen.
 //
+// Notes:
+//   - the world is drawn into an offscreen buffer and then blitted across at
+//     the screen shake's offset, so the shake moves the level as one piece.
+//     The heads up display is drawn straight onto the screen afterwards and so
+//     stays still while the world shakes.
+//
 // Parameters:
 //   - screen: the destination image for this frame.
 func (this *Game) Draw(screen *ebiten.Image) {
@@ -78,16 +97,21 @@ func (this *Game) Draw(screen *ebiten.Image) {
 		return
 	}
 
-	this.dungeon.Draw(screen)
+	this.drawWorld()
 
-	for _, gameObject := range GameObjects {
-		gameObject.Draw(screen)
-	}
+	offsetX, offsetY := this.shake.Offset()
+	options := &ebiten.DrawImageOptions{}
+	options.GeoM.Translate(float64(offsetX), float64(offsetY))
+
+	screen.Fill(wallColor)
+	screen.DrawImage(this.world, options)
+
+	drawHealthBar(screen, this.player.Health(), PlayerMaxHealth)
 
 	ebitenutil.DebugPrint(
 		screen,
 		fmt.Sprintf(
-			"CodeRunner\nFPS: %.1f  TPS: %.1f\nWASD/arrows to move, R to regenerate, esc to quit\nReach the green exit to win",
+			"CodeRunner\nFPS: %.1f  TPS: %.1f\nWASD/arrows to move, r to shake, esc to quit\nReach the green exit to win",
 			ebiten.ActualFPS(),
 			ebiten.ActualTPS()))
 }
@@ -109,7 +133,7 @@ func (this *Game) Layout(outsideWidth int, outsideHeight int) (screenWidth int, 
 //
 // Notes:
 //   - once the player has stepped onto the exit the level is won and the
-//     world freezes: only R and Escape are read until a new level is made.
+//     world freezes: only Escape is read after that.
 //
 // Returns:
 //   - err: ebiten.Termination when the player quits, otherwise nil.
@@ -118,15 +142,14 @@ func (this *Game) Update() (err error) {
 		return ebiten.Termination
 	}
 
-	if inpututil.IsKeyJustPressed(ebiten.KeyR) {
-		this.seed++
-		this.generate()
-
-		return nil
-	}
+	this.shake.Update()
 
 	if this.won {
 		return nil
+	}
+
+	if inpututil.IsKeyJustPressed(ebiten.KeyR) {
+		this.shake.Shake(ShakeMagnitude, ShakeDuration)
 	}
 
 	for _, gameObject := range GameObjects {
@@ -141,14 +164,15 @@ func (this *Game) Update() (err error) {
 	return nil
 }
 
-// generate builds a level from the current seed and repopulates the world
-// with the objects that live in it.
-func (this *Game) generate() {
-	this.dungeon = NewDungeon(this.seed)
-	this.player = NewPlayer(this.dungeon)
-	this.won = false
+// drawWorld paints the dungeon and everything living in it into the offscreen
+// world buffer, ready to be blitted at the shake offset.
+func (this *Game) drawWorld() {
+	this.world.Clear()
+	this.dungeon.Draw(this.world)
 
-	GameObjects = []GameObject{this.player}
+	for _, gameObject := range GameObjects {
+		gameObject.Draw(this.world)
+	}
 }
 
 // Clamp constrains value to the inclusive range [min, max].
