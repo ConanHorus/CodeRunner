@@ -25,6 +25,18 @@ func (this Rect) Center() (center Vector) {
 	return Vector{X: this.X + this.Width/2, Y: this.Y + this.Height/2}
 }
 
+// Contains reports whether a tile lies inside the rectangle.
+//
+// Parameters:
+//   - position: the tile to test.
+//
+// Returns:
+//   - contains: true when the tile is within the rectangle's extents.
+func (this Rect) Contains(position Vector) (contains bool) {
+	return position.X >= this.X && position.X < this.Right() &&
+		position.Y >= this.Y && position.Y < this.Bottom()
+}
+
 // Right reports the first column past the rectangle.
 //
 // Returns:

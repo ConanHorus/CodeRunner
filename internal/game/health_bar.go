@@ -11,6 +11,10 @@ const (
 	// healthBarBorder is how thick, in pixels, the frame around the bar is.
 	healthBarBorder = 2
 
+	// healthBarDivider is how thick, in pixels, the lines splitting the bar
+	// into one segment per hit are.
+	healthBarDivider = 2
+
 	// healthBarHeight and healthBarWidth are the size, in pixels, of the whole
 	// bar, frame included.
 	healthBarHeight = 16
@@ -32,7 +36,8 @@ var (
 	healthBarLowColor    = color.RGBA{R: 0xF3, G: 0x8B, B: 0xA8, A: 0xFF}
 )
 
-// drawHealthBar paints the health bar in the bottom left corner of the screen.
+// drawHealthBar paints the health bar in the bottom left corner of the screen,
+// split into one segment per hit the player can take.
 //
 // Notes:
 //   - the bar is heads up display, not world, so it is drawn straight onto the
@@ -58,16 +63,21 @@ func drawHealthBar(screen *ebiten.Image, health int, maxHealth int) {
 	vector.DrawFilledRect(screen, innerLeft, innerTop, innerWidth, innerHeight, healthBarEmptyColor, false)
 
 	fraction := healthFraction(health, maxHealth)
-	if fraction <= 0 {
-		return
+
+	if fraction > 0 {
+		fill := healthBarFillColor
+		if fraction <= healthBarLowFraction {
+			fill = healthBarLowColor
+		}
+
+		vector.DrawFilledRect(screen, innerLeft, innerTop, innerWidth*fraction, innerHeight, fill, false)
 	}
 
-	fill := healthBarFillColor
-	if fraction <= healthBarLowFraction {
-		fill = healthBarLowColor
-	}
+	for segment := 1; segment < maxHealth; segment++ {
+		dividerLeft := innerLeft + innerWidth*float32(segment)/float32(maxHealth) - float32(healthBarDivider)/2
 
-	vector.DrawFilledRect(screen, innerLeft, innerTop, innerWidth*fraction, innerHeight, fill, false)
+		vector.DrawFilledRect(screen, dividerLeft, innerTop, healthBarDivider, innerHeight, healthBarBorderColor, false)
+	}
 }
 
 // healthFraction reports how full the bar should be drawn.

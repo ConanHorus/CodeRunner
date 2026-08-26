@@ -139,14 +139,6 @@ func TestExploredIsFalseForTilesNeverSeen(t *testing.T) {
 	}
 }
 
-func abs(value int) (absolute int) {
-	if value < 0 {
-		return -value
-	}
-
-	return value
-}
-
 func TestExploredOffMapIsFalse(t *testing.T) {
 	sight := NewLineOfSight(func(x int, y int) bool { return false })
 	sight.LookFrom(Vector{X: 5, Y: 5})
