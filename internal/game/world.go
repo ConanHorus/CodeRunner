@@ -110,16 +110,30 @@ func (this *World) Distance(position Vector) (distance int) {
 // Draw paints the level and everything living in it onto screen, floor first
 // and the player last so that they are never hidden.
 //
+// Notes:
+//   - monsters and items are drawn only while the tile they stand on is in
+//     sight of the player. A remembered tile shows the floor it was left with
+//     and nothing else, so what has moved or been taken since is never given
+//     away, and a monster around the corner stays a surprise.
+//
 // Parameters:
 //   - screen: the destination image for this frame.
 func (this *World) Draw(screen *ebiten.Image) {
 	this.dungeon.Draw(screen)
 
 	for _, item := range this.items {
+		if !this.Visible(item.Position()) {
+			continue
+		}
+
 		item.Draw(screen)
 	}
 
 	for _, monster := range this.monsters {
+		if !this.Visible(monster.Position()) {
+			continue
+		}
+
 		monster.Draw(screen)
 	}
 
@@ -322,6 +336,18 @@ func (this *World) Update() {
 	this.dungeon.Update()
 	this.dungeon.Illuminate(this.player.Position())
 	this.shake.Update()
+}
+
+// Visible reports whether a tile is in sight of the player right now.
+//
+// Parameters:
+//   - position: the tile to test.
+//
+// Returns:
+//   - visible: false for a tile only remembered, for one never seen, and for
+//     anything off the map.
+func (this *World) Visible(position Vector) (visible bool) {
+	return this.dungeon.Visible(position.X, position.Y)
 }
 
 // addItem lays an item on the floor.
