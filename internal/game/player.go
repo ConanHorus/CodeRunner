@@ -280,8 +280,8 @@ func (this *Player) Weapon() (weapon Weapon) {
 }
 
 // attack swings the current weapon the way the player is facing: the sword
-// hits whatever monster stands on the next tile, the bow looses an arrow.
-// Empty hands do nothing.
+// hits whatever monster stands on the next tile, the bow looses an arrow and
+// sounds the shot. Empty hands do nothing.
 func (this *Player) attack() {
 	switch this.weapon {
 	case WeaponSword:
@@ -292,6 +292,7 @@ func (this *Player) attack() {
 		}
 	case WeaponBow:
 		this.world.SpawnProjectile(NewProjectile(this.world, ProjectileArrow, this.position, this.facing))
+		this.world.Sounds().PlayShot()
 	default:
 		return
 	}

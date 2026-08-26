@@ -14,3 +14,9 @@ import _ "embed"
 //
 //go:embed cheering.wav
 var Cheering []byte
+
+// GunShot is the shot heard when the player looses an arrow.
+// Linear PCM, 16 bit little endian, 2 channels, 48000 Hz.
+//
+//go:embed shot.wav
+var GunShot []byte

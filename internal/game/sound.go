@@ -54,7 +54,8 @@ type note struct {
 // play. Nothing is read off disk: effects are either synthesised or embedded
 // into the binary, so the game stays a single file with no assets beside it.
 type Sounds struct {
-	win *audio.Player
+	shot *audio.Player
+	win  *audio.Player
 }
 
 // NewSounds generates the game's sound effects.
@@ -63,21 +64,28 @@ type Sounds struct {
 //   - sounds: ready-to-play sounds.
 func NewSounds() (sounds *Sounds) {
 	return &Sounds{
-		win: winPlayer(),
+		shot: wavPlayer(assets.GunShot),
+		win:  wavPlayer(assets.Cheering),
 	}
 }
 
-// winPlayer prepares the cheer played when the player reaches the exit.
+// wavPlayer prepares one of the embedded wav assets for playing.
 //
 // Notes:
-//   - a cheer that will not decode leaves the player nil and the win silent,
-//     rather than taking the game down over a sound effect. PlayWin skips a
-//     nil player.
+//   - an asset that will not decode leaves the player nil and that one effect
+//     silent, rather than taking the game down over a sound effect. play skips
+//     a nil player.
+//   - the decoder does no resampling, so an asset recorded at anything other
+//     than SampleRate would play at the wrong pitch. The sounds package keeps
+//     every asset at SampleRate, and sound_test.go holds it to that.
+//
+// Parameters:
+//   - asset: the embedded wav bytes to decode.
 //
 // Returns:
-//   - player: the cheer, ready to play, or nil if it could not be prepared.
-func winPlayer() (player *audio.Player) {
-	stream, err := wav.DecodeF32(bytes.NewReader(assets.Cheering))
+//   - player: the sound, ready to play, or nil if it could not be prepared.
+func wavPlayer(asset []byte) (player *audio.Player) {
+	stream, err := wav.DecodeF32(bytes.NewReader(asset))
 	if err != nil {
 		return nil
 	}
@@ -90,25 +98,55 @@ func winPlayer() (player *audio.Player) {
 	return player
 }
 
+// PlayShot plays the shot the player's bow looses, from the top, cutting off
+// any shot still sounding so that quick fire keeps up with the bow.
+//
+// Notes:
+//   - a nil Sounds is silent, so a world built without sound, as the tests
+//     build it, shoots quietly rather than panicking.
+func (this *Sounds) PlayShot() {
+	if this == nil {
+		return
+	}
+
+	play(this.shot)
+}
+
 // PlayWin plays the win cheer from the top, cutting off any copy of it still
+// sounding.
+//
+// Notes:
+//   - a nil Sounds is silent, matching PlayShot.
+func (this *Sounds) PlayWin() {
+	if this == nil {
+		return
+	}
+
+	play(this.win)
+}
+
+// play starts a sound over from the top, cutting off any copy of it still
 // sounding.
 //
 // Notes:
 //   - a sound that would not prepare, or that will not rewind, is skipped
 //     rather than played from wherever it happens to sit. Losing an effect is
 //     not worth taking the game down for.
-func (this *Sounds) PlayWin() {
-	if this.win == nil {
+//
+// Parameters:
+//   - player: the sound to play, which may be nil.
+func play(player *audio.Player) {
+	if player == nil {
 		return
 	}
 
-	this.win.Pause()
+	player.Pause()
 
-	if err := this.win.Rewind(); err != nil {
+	if err := player.Rewind(); err != nil {
 		return
 	}
 
-	this.win.Play()
+	player.Play()
 }
 
 // audioContext reports the process wide audio context, creating it on first

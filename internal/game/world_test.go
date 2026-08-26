@@ -760,3 +760,15 @@ func thresholdOutsideBossRoom(dungeon *Dungeon) (outside Vector, direction Vecto
 
 	return Vector{}, Vector{}, false
 }
+
+func TestShootingWithoutSoundDoesNotPanic(t *testing.T) {
+	world := NewWorld(3)
+	player := world.Player()
+
+	player.GiveWeapon(WeaponBow)
+	player.attack()
+
+	if len(world.Projectiles()) != 1 {
+		t.Fatalf("the bow loosed %d projectiles, want 1", len(world.Projectiles()))
+	}
+}

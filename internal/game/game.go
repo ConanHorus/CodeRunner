@@ -60,14 +60,19 @@ type gameState uint8
 //   - game: a ready-to-run Game.
 func New(source []byte) (game *Game) {
 	seed := seedFromSource(source)
+	sounds := NewSounds()
 
-	return &Game{
+	game = &Game{
 		buffer: ebiten.NewImage(ScreenWidth, ScreenHeight),
 		seed:   seed,
-		sounds: NewSounds(),
+		sounds: sounds,
 		source: source,
 		world:  NewWorld(seed),
 	}
+
+	game.world.SetSounds(sounds)
+
+	return game
 }
 
 // seedFromSource hashes source down to a seed, so that the first level is a
@@ -199,6 +204,7 @@ func (this *Game) World() (world *World) {
 func (this *Game) restart() {
 	this.world.Dispose()
 	this.world = NewWorld(this.seed)
+	this.world.SetSounds(this.sounds)
 	this.state = statePlaying
 }
 
