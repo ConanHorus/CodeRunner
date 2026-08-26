@@ -370,7 +370,17 @@ func TestFireballHurtsAndShakes(t *testing.T) {
 	world := NewWorld(5)
 	defer world.Dispose()
 
+	dungeon := world.Dungeon()
 	player := world.Player()
+
+	// Fireballs burn out on the sanctuary, so the player has to be stood in
+	// some other room for one to reach them at all.
+	room := 0
+	for room == dungeon.Entrance() || room == dungeon.Exit() {
+		room++
+	}
+
+	player.SetPosition(dungeon.Room(room).Center())
 	origin := player.Position().Add(Vector{X: -1})
 	world.SpawnProjectile(NewProjectile(world, ProjectileFireball, origin, Vector{X: 1}))
 
@@ -437,6 +447,146 @@ func TestMonstersChaseAlongTheDistanceField(t *testing.T) {
 
 	if after := monster.Position().Manhattan(corner); after >= start && after > 1 {
 		t.Fatalf("%s did not close in: %d tiles away, was %d", monster.Name(), after, start)
+	}
+}
+
+func TestNoMonsterEntersTheSanctuary(t *testing.T) {
+	world := NewWorld(7)
+	defer world.Dispose()
+
+	player := world.Player()
+	sanctuary := world.Dungeon().Sanctuary()
+
+	hunter, approach, found := monsterOutsideTheSanctuary(world)
+	if !found {
+		t.Fatalf("no ordinary monster and no tile to stand it on outside the sanctuary")
+	}
+
+	hunter.SetPosition(approach)
+
+	for tick := 0; tick < 5*ebiten.TPS(); tick++ {
+		world.Update()
+
+		for _, monster := range world.Monsters() {
+			if sanctuary.Contains(monster.Position()) {
+				t.Fatalf("tick %d: %s walked into the sanctuary at %v",
+					tick, monster.Name(), monster.Position())
+			}
+		}
+	}
+
+	if player.Health() != PlayerMaxHealth {
+		t.Fatalf("player has %d health after standing in the sanctuary, want %d",
+			player.Health(), PlayerMaxHealth)
+	}
+}
+
+func TestFireballsBurnOutOnTheSanctuary(t *testing.T) {
+	world := NewWorld(5)
+	defer world.Dispose()
+
+	player := world.Player()
+	origin := player.Position().Add(Vector{X: -1})
+	world.SpawnProjectile(NewProjectile(world, ProjectileFireball, origin, Vector{X: 1}))
+
+	for tick := 0; tick < ebiten.TPS(); tick++ {
+		world.Update()
+	}
+
+	if player.Health() != PlayerMaxHealth {
+		t.Fatalf("a fireball reached the player inside the sanctuary")
+	}
+
+	if len(world.Projectiles()) != 0 {
+		t.Fatalf("the burnt out fireball was not swept")
+	}
+}
+
+func TestArrowsCrossTheSanctuary(t *testing.T) {
+	world := NewWorld(5)
+	defer world.Dispose()
+
+	player := world.Player()
+	world.SpawnProjectile(NewProjectile(world, ProjectileArrow, player.Position(), Vector{X: 1}))
+	world.Update()
+
+	if len(world.Projectiles()) != 1 {
+		t.Fatalf("an arrow loosed from inside the sanctuary was burnt out")
+	}
+}
+
+func TestKeyShimmerStaysWithinItsSwing(t *testing.T) {
+	world := NewWorld(9)
+	defer world.Dispose()
+
+	key := itemOfKind(world, ItemKey)
+	if key == nil {
+		t.Fatalf("no key was placed")
+	}
+
+	for tick := range 600 {
+		world.Update()
+
+		if level := key.shimmer(); level < keyShimmerLow || level > 1 {
+			t.Fatalf("tick %d: shimmer = %v, want it within [%v, 1]", tick, level, keyShimmerLow)
+		}
+	}
+}
+
+func TestVisibleFollowsTheDungeonSight(t *testing.T) {
+	world := NewWorld(3)
+	defer world.Dispose()
+
+	dungeon := world.Dungeon()
+
+	for x := range Cols {
+		for y := range Rows {
+			position := Vector{X: x, Y: y}
+
+			if world.Visible(position) != dungeon.Visible(x, y) {
+				t.Fatalf("Visible(%v) = %v, want %v", position, world.Visible(position), dungeon.Visible(x, y))
+			}
+		}
+	}
+
+	for _, point := range []Vector{{X: -1}, {X: Cols}, {Y: -1}, {Y: Rows}} {
+		if world.Visible(point) {
+			t.Errorf("Visible(%v) off the map is true", point)
+		}
+	}
+}
+
+func TestPopulationBehindWallsIsOutOfSight(t *testing.T) {
+	for seed := range uint64(worldTestSeeds) {
+		world := NewWorld(seed)
+
+		boss := bossOf(world)
+		if boss == nil {
+			t.Fatalf("seed %d: no boss was placed", seed)
+		}
+
+		if world.Visible(boss.Position()) {
+			t.Fatalf("seed %d: the boss is in sight from the spawn point", seed)
+		}
+
+		world.Dispose()
+	}
+}
+
+func TestPopulationInTheOpenIsInSight(t *testing.T) {
+	world := NewWorld(11)
+	defer world.Dispose()
+
+	monster, standing, found := monsterWithFreeNeighbour(world)
+	if !found {
+		t.Fatalf("no ordinary monster has a free neighbouring tile")
+	}
+
+	world.Player().SetPosition(standing)
+	world.Update()
+
+	if !world.Visible(monster.Position()) {
+		t.Fatalf("the %s beside the player is out of sight", monster.Name())
 	}
 }
 
@@ -516,6 +666,50 @@ func monsterWithFreeNeighbour(world *World) (monster *Monster, standing Vector, 
 			if dungeon.TileAt(neighbour.X, neighbour.Y) == TileFloor && !world.Occupied(neighbour) {
 				return candidate, neighbour, true
 			}
+		}
+	}
+
+	return nil, Vector{}, false
+}
+
+// monsterOutsideTheSanctuary finds an ordinary monster and the closest tile to
+// the player it is allowed to stand on: a free walkable tile on the ring just
+// outside the sanctuary.
+//
+// Parameters:
+//   - world: the world to search.
+//
+// Returns:
+//   - monster: the monster to stand there.
+//   - approach: the tile to stand it on.
+//   - found: false if no such monster or no such tile exists.
+func monsterOutsideTheSanctuary(world *World) (monster *Monster, approach Vector, found bool) {
+	dungeon := world.Dungeon()
+	sanctuary := dungeon.Sanctuary()
+
+	for _, candidate := range world.Monsters() {
+		if candidate.IsBoss() {
+			continue
+		}
+
+		monster = candidate
+
+		break
+	}
+
+	if monster == nil {
+		return nil, Vector{}, false
+	}
+
+	for y := sanctuary.Y - 1; y <= sanctuary.Bottom(); y++ {
+		for x := sanctuary.X - 1; x <= sanctuary.Right(); x++ {
+			tile := Vector{X: x, Y: y}
+
+			if sanctuary.Contains(tile) || !dungeon.Walkable(x, y) || world.Occupied(tile) {
+				continue
+			}
+
+			return monster, tile, true
 		}
 	}
 

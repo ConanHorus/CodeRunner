@@ -54,6 +54,13 @@ const (
 	sectorHeight  = Rows / SectorRows
 	sectorWidth   = Cols / SectorCols
 
+	// shimmerAlpha is the strongest a shimmer halo is laid over the level, and
+	// shimmerRadius is how far, in pixels, it reaches from the middle of its
+	// tile. Both are scaled by the shimmer level, so the halo swells as it
+	// brightens and shrinks back as it fades.
+	shimmerAlpha  = float32(0.4)
+	shimmerRadius = float32(12)
+
 	// tileSeam is how many pixels of the dark ground are left showing along
 	// the right and bottom of every dug tile, which draws the grid the level
 	// is laid out on and gives the floor some texture to move across. Walls
@@ -70,7 +77,6 @@ const (
 var (
 	corridorColor   = color.RGBA{R: 0x26, G: 0x26, B: 0x38, A: 0xFF}
 	darkColor       = color.RGBA{R: 0x0B, G: 0x0B, B: 0x11, A: 0xFF}
-	doorColor       = color.RGBA{R: 0xF9, G: 0xE2, B: 0xAF, A: 0xFF}
 	exitColor       = color.RGBA{R: 0xA6, G: 0xE3, B: 0xA1, A: 0xFF}
 	floorColor      = color.RGBA{R: 0x31, G: 0x32, B: 0x44, A: 0xFF}
 	keyholeColor    = color.RGBA{R: 0x11, G: 0x11, B: 0x1B, A: 0xFF}
@@ -95,6 +101,11 @@ var (
 // The exit itself starts sealed and only opens when OpenExit is called, which
 // the world does once the boss has fallen.
 //
+// The entrance room is the mirror of it: a sanctuary no monster may set foot
+// in, which the player can always fall back to, and the tile they spawn on is
+// set as far back from its doorways as the room allows. Between them the
+// player never opens a run already cornered.
+//
 // Tiles in sight of the viewpoint are rendered lit, fading with distance from
 // it, tiles that have been in sight of an earlier viewpoint are rendered dim,
 // and everything else is dark. The viewpoint is set with Illuminate, and the
@@ -108,6 +119,7 @@ type Dungeon struct {
 	pulse       float32
 	rooms       []Rect
 	sight       *LineOfSight
+	spawn       Vector
 	tiles       [Cols][Rows]Tile
 }
 
@@ -137,6 +149,7 @@ func NewDungeon(seed uint64) (dungeon *Dungeon) {
 	dungeon.sight = NewLineOfSight(dungeon.blocksSight)
 	dungeon.placeRooms(random)
 	dungeon.digCorridors(dungeon.planRoutes(random), random)
+	dungeon.placeSpawn()
 	dungeon.lockBossRoom()
 	dungeon.placeExit()
 	dungeon.Illuminate(dungeon.SpawnPoint())
@@ -180,15 +193,16 @@ func (this *Dungeon) Dispose() {
 }
 
 // Draw blits the pre-rendered level onto screen, then repaints the exit on top
-// of it at this tick's pulse.
+// of it at this tick's pulse, under a halo that beats with it.
 //
 // Notes:
 //   - the exit is the one tile painted per frame rather than baked, and the one
-//     tile the light falloff is not applied to. It is the way out, so it is
-//     drawn as something giving off light rather than as something lit.
-//   - a remembered exit is left as the bake has it. Memory does not pulse.
-//   - only an open exit beats. While it is still sealed the bake has it, so it
-//     reads as the barred way out it is rather than giving itself away.
+//     tile the light falloff is not applied to. It is the goal, so it is drawn
+//     as something giving off light rather than as something lit.
+//   - a sealed exit shimmers too, in its own barred colour and behind its seal,
+//     so that the goal is worth spotting from across a room before the boss
+//     falls as well as after.
+//   - a remembered exit is left as the bake has it. Memory does not shimmer.
 //
 // Parameters:
 //   - screen: the destination image for this frame.
@@ -196,18 +210,26 @@ func (this *Dungeon) Draw(screen *ebiten.Image) {
 	screen.DrawImage(this.image, nil)
 
 	exit := this.ExitPoint()
-	if !this.ExitOpen() || !this.sight.Visible(exit.X, exit.Y) {
+	if !this.sight.Visible(exit.X, exit.Y) {
 		return
 	}
 
-	vector.DrawFilledRect(
-		screen,
-		float32(exit.X*GridSize),
-		float32(exit.Y*GridSize),
-		GridSize-tileSeam,
-		GridSize-tileSeam,
-		blend(exitColor, this.pulseLevel()),
-		false)
+	lit := exitColor
+	if !this.ExitOpen() {
+		lit = sealedExitColor
+	}
+
+	left := float32(exit.X * GridSize)
+	top := float32(exit.Y * GridSize)
+	level := this.pulseLevel()
+
+	vector.DrawFilledRect(screen, left, top, GridSize-tileSeam, GridSize-tileSeam, blend(lit, level), false)
+
+	if !this.ExitOpen() {
+		renderSeal(screen, left, top)
+	}
+
+	renderShimmer(screen, left, top, lit, level)
 }
 
 // Entrance reports which room the player starts in.
@@ -317,13 +339,29 @@ func (this *Dungeon) RoomDistances(room int) (distances []int) {
 	return roomDistances(this.links, room)
 }
 
+// Sanctuary reports the ground no monster may set foot on: the room the player
+// spawns in, grown by one tile so that the ring around it is warded too.
+//
+// Notes:
+//   - the ring is what makes the room genuinely safe rather than merely hard
+//     to reach. Every way into the room is a doorway on that ring, so warding
+//     it stops a monster camping the threshold and clawing across it.
+//
+// Returns:
+//   - sanctuary: the entrance room and its wall ring.
+func (this *Dungeon) Sanctuary() (sanctuary Rect) {
+	room := this.rooms[this.entrance]
+
+	return Rect{X: room.X - 1, Y: room.Y - 1, Width: room.Width + 2, Height: room.Height + 2}
+}
+
 // SpawnPoint reports where a new player should start.
 //
 // Returns:
-//   - spawnPoint: the centre tile of the entrance room, which is one end of
-//     the longest route through the maze.
+//   - spawnPoint: the tile of the entrance room that placeSpawn chose, which
+//     is as far back from the room's doorways as its floor allows.
 func (this *Dungeon) SpawnPoint() (spawnPoint Vector) {
-	return this.rooms[this.entrance].Center()
+	return this.spawn
 }
 
 // TileAt reports the contents of the tile at x, y.
@@ -360,6 +398,20 @@ func (this *Dungeon) Update() {
 	if this.pulse >= 2*math.Pi {
 		this.pulse -= 2 * math.Pi
 	}
+}
+
+// Visible reports whether the tile at x, y is in sight of the viewpoint right
+// now, which is what everything standing on the floor is drawn or held back on.
+//
+// Parameters:
+//   - x: the tile column.
+//   - y: the tile row.
+//
+// Returns:
+//   - visible: false for a tile only remembered from an earlier viewpoint, for
+//     one never seen at all, and for anything off the map.
+func (this *Dungeon) Visible(x int, y int) (visible bool) {
+	return this.sight.Visible(x, y)
 }
 
 // Walkable reports whether the tile at x, y can be stood on.
@@ -575,17 +627,9 @@ func (this *Dungeon) lightLevel(x int, y int) (level float32) {
 //     ring rather than a single tile seals the room whichever shape the
 //     opening took: every tile next to the room interior is on the ring.
 func (this *Dungeon) lockBossRoom() {
-	room := this.rooms[this.exit]
-
-	for y := room.Y - 1; y <= room.Bottom(); y++ {
-		for x := room.X - 1; x <= room.Right(); x++ {
-			if room.Contains(Vector{X: x, Y: y}) || !this.tiles[x][y].Walkable() {
-				continue
-			}
-
-			this.tiles[x][y] = TileLockedDoor
-			this.lockedDoors = append(this.lockedDoors, Vector{X: x, Y: y})
-		}
+	for _, doorway := range this.roomDoorways(this.rooms[this.exit]) {
+		this.tiles[doorway.X][doorway.Y] = TileLockedDoor
+		this.lockedDoors = append(this.lockedDoors, doorway)
 	}
 }
 
@@ -621,6 +665,51 @@ func (this *Dungeon) placeRooms(random *rand.Rand) {
 					this.tiles[x][y] = TileFloor
 				}
 			}
+		}
+	}
+}
+
+// placeSpawn picks the tile of the entrance room the player starts on: the one
+// furthest from the nearest way into the room, so that they begin with the
+// length of the room between them and whatever comes down a corridor rather
+// than standing in a doorway with a monster already on the threshold.
+//
+// Notes:
+//   - it must run once the corridors are dug, because the doorways it measures
+//     from are only cut when a corridor pierces the room's wall ring.
+//   - ties go to the tile nearest the middle of the room, so a long room puts
+//     the player in the body of it rather than out in a corner.
+//   - a room with no doorway at all cannot happen, but would leave every tile
+//     tied, which the middle of the room then wins.
+func (this *Dungeon) placeSpawn() {
+	room := this.rooms[this.entrance]
+	doorways := this.roomDoorways(room)
+	middle := room.Center()
+
+	this.spawn = middle
+	best := -1
+
+	for y := room.Y; y < room.Bottom(); y++ {
+		for x := room.X; x < room.Right(); x++ {
+			if this.tiles[x][y] != TileFloor {
+				continue
+			}
+
+			candidate := Vector{X: x, Y: y}
+			nearest := Cols + Rows
+
+			for _, doorway := range doorways {
+				nearest = min(nearest, candidate.Manhattan(doorway))
+			}
+
+			switch {
+			case nearest < best:
+				continue
+			case nearest == best && candidate.Manhattan(middle) >= this.spawn.Manhattan(middle):
+				continue
+			}
+
+			best, this.spawn = nearest, candidate
 		}
 	}
 }
@@ -770,6 +859,35 @@ func (this *Dungeon) render() {
 	}
 }
 
+// roomDoorways lists the ways into a room: every walkable tile on the one tile
+// ring around it.
+//
+// Notes:
+//   - a corridor that runs along the ring for a stretch leaves a strip of
+//     doorways rather than a single one, so a room can have several tiles on
+//     the same side. Every one of them is a way in.
+//
+// Parameters:
+//   - room: the room to walk the ring of.
+//
+// Returns:
+//   - doorways: the walkable ring tiles, in reading order.
+func (this *Dungeon) roomDoorways(room Rect) (doorways []Vector) {
+	for y := room.Y - 1; y <= room.Bottom(); y++ {
+		for x := room.X - 1; x <= room.Right(); x++ {
+			tile := Vector{X: x, Y: y}
+
+			if room.Contains(tile) || !this.TileAt(x, y).Walkable() {
+				continue
+			}
+
+			doorways = append(doorways, tile)
+		}
+	}
+
+	return doorways
+}
+
 // adjacency turns a list of joins into a room by room neighbour lookup.
 //
 // Parameters:
@@ -890,6 +1008,27 @@ func renderKeyhole(image *ebiten.Image, left float32, top float32) {
 func renderSeal(image *ebiten.Image, left float32, top float32) {
 	vector.StrokeLine(image, left+3, top+3, left+GridSize-3, top+GridSize-3, 2, keyholeColor, true)
 	vector.StrokeLine(image, left+GridSize-3, top+3, left+3, top+GridSize-3, 2, keyholeColor, true)
+}
+
+// renderShimmer lays a soft halo of a thing's own colour over its tile, swelling
+// and fading with the shimmer level, so that the thing reads as giving off
+// light rather than as merely being lit. It is what marks out the two tiles
+// worth crossing a level for: the exit and the key.
+//
+// Parameters:
+//   - screen: the destination image for this frame.
+//   - left: the tile's left edge, in pixels.
+//   - top: the tile's top edge, in pixels.
+//   - lit: the colour of the thing the halo surrounds.
+//   - level: the shimmer level this tick, in the range [0, 1].
+func renderShimmer(screen *ebiten.Image, left float32, top float32, lit color.RGBA, level float32) {
+	vector.DrawFilledCircle(
+		screen,
+		left+GridSize/2,
+		top+GridSize/2,
+		shimmerRadius*level,
+		tint(lit, shimmerAlpha*level),
+		true)
 }
 
 // roomDistances measures how many joins away every room is from one room.
@@ -1063,16 +1202,17 @@ func spanningTree(random *rand.Rand) (edges []edge) {
 //   - tile: the tile to paint.
 //
 // Returns:
-//   - tileColor: the colour for that tile. Corridors and doors are painted as
-//     floor, so a passage reads as part of the same dug space as the rooms it
-//     joins rather than as something laid over them. Only the exit is picked
-//     out, because it is the one tile worth spotting from across a room.
+//   - tileColor: the colour for that tile. An ordinary door is painted as
+//     floor, so a threshold reads as part of the room it opens onto rather
+//     than as something laid across it, and only the tiles that matter to the
+//     player are picked out: the exit, and the locked doors barring the way to
+//     it.
 func tileColor(tile Tile) (tileColor color.RGBA) {
 	switch tile {
 	case TileCorridor:
 		return corridorColor
 	case TileDoor:
-		return doorColor
+		return floorColor
 	case TileExit:
 		return exitColor
 	case TileExitSealed:
@@ -1083,5 +1223,27 @@ func tileColor(tile Tile) (tileColor color.RGBA) {
 		return lockedDoorColor
 	default:
 		return wallColor
+	}
+}
+
+// tint reduces a colour to a share of its strength, alpha included, giving a
+// colour that lies over the level as a wash rather than painting over it.
+//
+// Notes:
+//   - Ebiten works in alpha premultiplied colour, so scaling every channel by
+//     the same share is all a translucent version of a colour takes.
+//
+// Parameters:
+//   - lit: the colour to wash with.
+//   - strength: how much of it to lay down, in the range [0, 1].
+//
+// Returns:
+//   - tinted: the wash colour.
+func tint(lit color.RGBA, strength float32) (tinted color.RGBA) {
+	return color.RGBA{
+		R: uint8(float32(lit.R) * strength),
+		G: uint8(float32(lit.G) * strength),
+		B: uint8(float32(lit.B) * strength),
+		A: uint8(float32(lit.A) * strength),
 	}
 }

@@ -105,7 +105,9 @@ var (
 // monster navigates by the world's distance field, stepping to whichever
 // neighbouring tile is fewest steps from the player, which walks them around
 // walls and through doors without any pathfinding of their own. A monster
-// standing next to the player claws them instead of stepping.
+// standing next to the player claws them instead of stepping. No monster can
+// enter the dungeon's sanctuary, so the player always has one room to retreat
+// to.
 type Monster struct {
 	health     int
 	hitTimer   float32
@@ -313,17 +315,23 @@ func (this *Monster) Update() {
 
 // canMoveTo reports whether the monster may step onto a tile.
 //
+// Notes:
+//   - the sanctuary is warded against every monster, the boss included, so a
+//     player who falls back to the room they spawned in cannot be followed or
+//     clawed across its threshold.
+//
 // Parameters:
 //   - target: the tile to test.
 //
 // Returns:
-//   - canMove: false for solid tiles, the exit, and tiles something else is
-//     standing on.
+//   - canMove: false for solid tiles, the exit, the sanctuary, and tiles
+//     something else is standing on.
 func (this *Monster) canMoveTo(target Vector) (canMove bool) {
 	dungeon := this.world.Dungeon()
 
 	return dungeon.Walkable(target.X, target.Y) &&
 		dungeon.TileAt(target.X, target.Y) != TileExit &&
+		!dungeon.Sanctuary().Contains(target) &&
 		!this.world.Occupied(target)
 }
 

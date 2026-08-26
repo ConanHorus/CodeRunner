@@ -40,7 +40,7 @@ func drawHUD(screen *ebiten.Image, world *World) {
 	left += textWidth(label) + hudGap
 
 	if player.HasKey() {
-		drawKeyGlyph(screen, float32(left), float32(top))
+		drawKeyGlyph(screen, float32(left), float32(top), keyColor)
 		ebitenutil.DebugPrintAt(screen, "Key", left+GridSize+2, top)
 	}
 
