@@ -1,10 +1,13 @@
 package game
 
 import (
+	"bytes"
 	"encoding/binary"
 	"math"
 
+	assets "github.com/ConanHorus/CodeRunner/sounds"
 	"github.com/hajimehoshi/ebiten/v2/audio"
+	"github.com/hajimehoshi/ebiten/v2/audio/wav"
 )
 
 const (
@@ -47,9 +50,9 @@ type note struct {
 	seconds float32
 }
 
-// Sounds holds the game's sound effects, generated once up front and ready to
-// play. Nothing is read off disk: every effect is synthesised, so the game
-// stays a single binary with no asset files beside it.
+// Sounds holds the game's sound effects, prepared once up front and ready to
+// play. Nothing is read off disk: effects are either synthesised or embedded
+// into the binary, so the game stays a single file with no assets beside it.
 type Sounds struct {
 	win *audio.Player
 }
@@ -59,21 +62,46 @@ type Sounds struct {
 // Returns:
 //   - sounds: ready-to-play sounds.
 func NewSounds() (sounds *Sounds) {
-	context := audioContext()
-
 	return &Sounds{
-		win: context.NewPlayerF32FromBytes(renderNotes(winChime, winChimeGain)),
+		win: winPlayer(),
 	}
 }
 
-// PlayWin plays the win chime from the top, cutting off any copy of it still
+// winPlayer prepares the cheer played when the player reaches the exit.
+//
+// Notes:
+//   - a cheer that will not decode leaves the player nil and the win silent,
+//     rather than taking the game down over a sound effect. PlayWin skips a
+//     nil player.
+//
+// Returns:
+//   - player: the cheer, ready to play, or nil if it could not be prepared.
+func winPlayer() (player *audio.Player) {
+	stream, err := wav.DecodeF32(bytes.NewReader(assets.Cheering))
+	if err != nil {
+		return nil
+	}
+
+	player, err = audioContext().NewPlayerF32(stream)
+	if err != nil {
+		return nil
+	}
+
+	return player
+}
+
+// PlayWin plays the win cheer from the top, cutting off any copy of it still
 // sounding.
 //
 // Notes:
-//   - a sound that will not rewind is skipped rather than played from
-//     wherever it happens to sit. Losing an effect is not worth taking the
-//     game down for.
+//   - a sound that would not prepare, or that will not rewind, is skipped
+//     rather than played from wherever it happens to sit. Losing an effect is
+//     not worth taking the game down for.
 func (this *Sounds) PlayWin() {
+	if this.win == nil {
+		return
+	}
+
 	this.win.Pause()
 
 	if err := this.win.Rewind(); err != nil {

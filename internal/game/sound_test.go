@@ -1,9 +1,13 @@
 package game
 
 import (
+	"bytes"
 	"encoding/binary"
 	"math"
 	"testing"
+
+	assets "github.com/ConanHorus/CodeRunner/sounds"
+	"github.com/hajimehoshi/ebiten/v2/audio/wav"
 )
 
 func TestRenderNotesLength(t *testing.T) {
@@ -105,4 +109,19 @@ func TestEnvelope(t *testing.T) {
 //   - sample: the sample read.
 func sampleAt(pcm []byte, offset int) (sample float32) {
 	return math.Float32frombits(binary.LittleEndian.Uint32(pcm[offset : offset+bytesPerSample]))
+}
+
+func TestWinCheerDecodes(t *testing.T) {
+	stream, err := wav.DecodeF32(bytes.NewReader(assets.Cheering))
+	if err != nil {
+		t.Fatalf("the embedded win cheer will not decode: %v", err)
+	}
+
+	if rate := stream.SampleRate(); rate != SampleRate {
+		t.Errorf("win cheer is %d Hz, want %d: the decoder does not resample, so it would play at the wrong pitch", rate, SampleRate)
+	}
+
+	if stream.Length() == 0 {
+		t.Error("win cheer decoded to no audio at all")
+	}
 }
