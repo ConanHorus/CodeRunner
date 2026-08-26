@@ -1,6 +1,7 @@
 package game
 
 import (
+	"image/color"
 	"math"
 	"testing"
 )
@@ -209,6 +210,101 @@ func TestPulseLevelStaysWithinItsSwing(t *testing.T) {
 			t.Fatalf("tick %d: pulse = %v, want it wrapped into [0, 2pi)", tick, dungeon.pulse)
 		}
 	}
+}
+
+func TestSpawnPointStandsAsFarBackFromTheDoorwaysAsItCan(t *testing.T) {
+	for seed := range uint64(testSeeds) {
+		dungeon := NewDungeon(seed)
+		room := dungeon.Room(dungeon.Entrance())
+		doorways := dungeon.roomDoorways(room)
+		spawn := dungeon.SpawnPoint()
+
+		if !room.Contains(spawn) || dungeon.TileAt(spawn.X, spawn.Y) != TileFloor {
+			t.Fatalf("seed %d: spawn %v is not floor inside the entrance room %v", seed, spawn, room)
+		}
+
+		reach := nearestOf(doorways, spawn)
+
+		for y := room.Y; y < room.Bottom(); y++ {
+			for x := room.X; x < room.Right(); x++ {
+				candidate := Vector{X: x, Y: y}
+
+				if nearestOf(doorways, candidate) > reach {
+					t.Fatalf("seed %d: spawn %v is %d from the nearest doorway, but %v is %d",
+						seed, spawn, reach, candidate, nearestOf(doorways, candidate))
+				}
+			}
+		}
+
+		dungeon.Dispose()
+	}
+}
+
+func TestSanctuaryCoversTheEntranceRoomAndItsRing(t *testing.T) {
+	for seed := range uint64(testSeeds) {
+		dungeon := NewDungeon(seed)
+		room := dungeon.Room(dungeon.Entrance())
+		sanctuary := dungeon.Sanctuary()
+
+		if !sanctuary.Contains(dungeon.SpawnPoint()) {
+			t.Fatalf("seed %d: the spawn point is outside the sanctuary", seed)
+		}
+
+		for _, doorway := range dungeon.roomDoorways(room) {
+			if !sanctuary.Contains(doorway) {
+				t.Fatalf("seed %d: doorway %v is outside the sanctuary %v", seed, doorway, sanctuary)
+			}
+		}
+
+		if sanctuary.Contains(dungeon.ExitPoint()) {
+			t.Fatalf("seed %d: the exit lies inside the sanctuary", seed)
+		}
+
+		dungeon.Dispose()
+	}
+}
+
+func TestOrdinaryDoorsArePaintedAsFloor(t *testing.T) {
+	if painted := tileColor(TileDoor); painted != floorColor {
+		t.Errorf("tileColor(TileDoor) = %v, want the floor colour %v", painted, floorColor)
+	}
+
+	if painted := tileColor(TileLockedDoor); painted == floorColor {
+		t.Errorf("a locked door should still stand out from the floor")
+	}
+}
+
+func TestTintScalesEveryChannelIncludingAlpha(t *testing.T) {
+	if tinted := tint(exitColor, 1); tinted != exitColor {
+		t.Errorf("tint(exitColor, 1) = %v, want the colour untouched %v", tinted, exitColor)
+	}
+
+	if tinted := tint(exitColor, 0); tinted != (color.RGBA{}) {
+		t.Errorf("tint(exitColor, 0) = %v, want it fully transparent", tinted)
+	}
+
+	tinted := tint(exitColor, 0.5)
+	if tinted.R > tinted.A || tinted.G > tinted.A || tinted.B > tinted.A {
+		t.Errorf("tint(exitColor, 0.5) = %v, want no channel above its alpha", tinted)
+	}
+}
+
+// nearestOf measures how far a tile is from the closest of a set of tiles.
+//
+// Parameters:
+//   - tiles: the tiles to measure to. An empty set reads as unreachably far.
+//   - from: the tile to measure from.
+//
+// Returns:
+//   - distance: the fewest cardinal steps to any of them, ignoring walls.
+func nearestOf(tiles []Vector, from Vector) (distance int) {
+	distance = Cols + Rows
+
+	for _, tile := range tiles {
+		distance = min(distance, from.Manhattan(tile))
+	}
+
+	return distance
 }
 
 // reachableTiles floods the walkable tiles out from a start tile.

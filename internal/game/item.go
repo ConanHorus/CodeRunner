@@ -28,6 +28,13 @@ const (
 	// the eye, and itemBobSpeed is how fast, in radians per tick, it does so.
 	itemBobHeight = float32(1.5)
 	itemBobSpeed  = 0.08
+
+	// keyShimmerLow is how much of the key's colour is kept at the low end of
+	// its shimmer, and keyShimmerSpeed is how fast, in radians per tick, the
+	// shimmer beats. The key is the one item a run cannot be finished without,
+	// so it is the one item lit as well as bobbed.
+	keyShimmerLow   = float32(0.5)
+	keyShimmerSpeed = 0.09
 )
 
 var (
@@ -55,7 +62,9 @@ var (
 
 // Item is something lying on the dungeon floor that the player picks up by
 // stepping onto it. Items never move or act on their own; they only draw
-// themselves, bobbing gently so they stand out from the floor.
+// themselves, bobbing gently so they stand out from the floor. The key
+// shimmers on top of that, so the one item a run turns on can be picked out
+// from across a room.
 type Item struct {
 	kind     ItemKind
 	position Vector
@@ -88,7 +97,10 @@ func (this *Item) Draw(screen *ebiten.Image) {
 
 	switch this.kind {
 	case ItemKey:
-		drawKeyGlyph(screen, left, top)
+		level := this.shimmer()
+
+		renderShimmer(screen, left, top, keyColor, level)
+		drawKeyGlyph(screen, left, top, blend(keyColor, level))
 	case ItemBow:
 		drawBowGlyph(screen, left, top)
 	case ItemHeart:
@@ -130,6 +142,17 @@ func (this *Item) Update() {
 //   - offset: the vertical offset, in pixels.
 func (this *Item) bob() (offset float32) {
 	return float32(math.Sin(float64(this.world.Ticks())*itemBobSpeed)) * itemBobHeight
+}
+
+// shimmer reports how brightly the key is drawn this frame.
+//
+// Returns:
+//   - level: how much of the key's colour to keep, swinging between
+//     keyShimmerLow and 1.
+func (this *Item) shimmer() (level float32) {
+	wave := (1 + float32(math.Sin(float64(this.world.Ticks())*keyShimmerSpeed))) / 2
+
+	return keyShimmerLow + (1-keyShimmerLow)*wave
 }
 
 // Name reports the label announcements and the heads up display use for this
@@ -195,9 +218,11 @@ func drawHeartGlyph(screen *ebiten.Image, left float32, top float32) {
 //   - screen: the destination image.
 //   - left: the square's left edge, in pixels.
 //   - top: the square's top edge, in pixels.
-func drawKeyGlyph(screen *ebiten.Image, left float32, top float32) {
-	vector.StrokeCircle(screen, left+5, top+8, 3, 2, keyColor, true)
-	vector.DrawFilledRect(screen, left+8, top+7, 7, 2, keyColor, false)
-	vector.DrawFilledRect(screen, left+11, top+9, 2, 2, keyColor, false)
-	vector.DrawFilledRect(screen, left+14, top+9, 1, 3, keyColor, false)
+//   - glyph: the colour to draw it in, which is keyColor dimmed by the
+//     shimmer for a key on the floor and keyColor itself everywhere else.
+func drawKeyGlyph(screen *ebiten.Image, left float32, top float32, glyph color.RGBA) {
+	vector.StrokeCircle(screen, left+5, top+8, 3, 2, glyph, true)
+	vector.DrawFilledRect(screen, left+8, top+7, 7, 2, glyph, false)
+	vector.DrawFilledRect(screen, left+11, top+9, 2, 2, glyph, false)
+	vector.DrawFilledRect(screen, left+14, top+9, 1, 3, glyph, false)
 }

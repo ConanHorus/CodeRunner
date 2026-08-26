@@ -127,6 +127,11 @@ func (this *Projectile) SetPosition(position Vector) {
 }
 
 // Update flies the projectile forward one tick and resolves anything it hits.
+//
+// Notes:
+//   - a fireball burns out on the edge of the sanctuary. The room is warded
+//     against monsters, so it is warded against what they throw as well;
+//     arrows are the player's and cross it freely.
 func (this *Projectile) Update() {
 	if !this.alive {
 		return
@@ -138,6 +143,12 @@ func (this *Projectile) Update() {
 
 	tile := this.Position()
 	if !this.world.Dungeon().Walkable(tile.X, tile.Y) {
+		this.alive = false
+
+		return
+	}
+
+	if this.kind == ProjectileFireball && this.world.Dungeon().Sanctuary().Contains(tile) {
 		this.alive = false
 
 		return
