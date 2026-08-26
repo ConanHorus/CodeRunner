@@ -33,6 +33,7 @@ type Game struct {
 	player  *Player
 	seed    uint64
 	shake   *ScreenShake
+	sounds  *Sounds
 	source  []byte
 	won     bool
 	world   *ebiten.Image
@@ -56,6 +57,7 @@ func New(source []byte) (game *Game) {
 		player:  NewPlayer(dungeon),
 		seed:    seed,
 		shake:   NewScreenShake(),
+		sounds:  NewSounds(),
 		source:  source,
 		world:   ebiten.NewImage(ScreenWidth, ScreenHeight),
 	}
@@ -136,7 +138,8 @@ func (this *Game) Layout(outsideWidth int, outsideHeight int) (screenWidth int, 
 //
 // Notes:
 //   - once the player has stepped onto the exit the level is won and the
-//     world freezes: only Escape is read after that.
+//     world freezes: only Escape is read after that. The win chime is started
+//     on the tick the level is won, and plays on over the win screen.
 //   - what the player can see is worked out here, from wherever the step left
 //     them, so a frame never has to pay for it.
 //
@@ -168,6 +171,8 @@ func (this *Game) Update() (err error) {
 
 	if this.dungeon.TileAt(position.X, position.Y) == TileExit {
 		this.won = true
+
+		this.sounds.PlayWin()
 	}
 
 	return nil
