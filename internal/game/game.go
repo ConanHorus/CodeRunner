@@ -83,6 +83,9 @@ func seedFromSource(source []byte) (seed uint64) {
 // Draw renders the current frame onto screen.
 //
 // Notes:
+//   - the tiles the player can see are drawn lit and the ones already walked
+//     past are drawn dim. Everything else is dark, including the gutter the
+//     screen shake opens up at the edges.
 //   - the world is drawn into an offscreen buffer and then blitted across at
 //     the screen shake's offset, so the shake moves the level as one piece.
 //     The heads up display is drawn straight onto the screen afterwards and so
@@ -103,7 +106,7 @@ func (this *Game) Draw(screen *ebiten.Image) {
 	options := &ebiten.DrawImageOptions{}
 	options.GeoM.Translate(float64(offsetX), float64(offsetY))
 
-	screen.Fill(wallColor)
+	screen.Fill(darkColor)
 	screen.DrawImage(this.world, options)
 
 	drawHealthBar(screen, this.player.Health(), PlayerMaxHealth)
@@ -134,6 +137,8 @@ func (this *Game) Layout(outsideWidth int, outsideHeight int) (screenWidth int, 
 // Notes:
 //   - once the player has stepped onto the exit the level is won and the
 //     world freezes: only Escape is read after that.
+//   - what the player can see is worked out here, from wherever the step left
+//     them, so a frame never has to pay for it.
 //
 // Returns:
 //   - err: ebiten.Termination when the player quits, otherwise nil.
@@ -157,6 +162,8 @@ func (this *Game) Update() (err error) {
 	}
 
 	position := this.player.Position()
+	this.dungeon.Illuminate(position)
+
 	if this.dungeon.TileAt(position.X, position.Y) == TileExit {
 		this.won = true
 	}

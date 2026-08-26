@@ -21,6 +21,12 @@ const (
 	// SectorRows is the number of sectors down the dungeon.
 	SectorRows = 3
 
+	// dimLevel is how much of a tile's lit colour is kept when the tile is
+	// only remembered rather than in sight. The rest is given over to the dark
+	// the level sits on, so a remembered tile reads as the same shape seen
+	// through the dark instead of as a different tile.
+	dimLevel = 0.45
+
 	// maxRoomHeight and maxRoomWidth leave a one tile wall margin inside the
 	// sector, which guarantees at least two solid tiles between the rooms of
 	// neighbouring sectors. Those two tiles are the lanes the corridors turn
@@ -35,11 +41,10 @@ const (
 )
 
 var (
-	corridorColor = color.RGBA{R: 0x26, G: 0x26, B: 0x38, A: 0xFF}
-	doorColor     = color.RGBA{R: 0xF9, G: 0xE2, B: 0xAF, A: 0xFF}
-	exitColor     = color.RGBA{R: 0xA6, G: 0xE3, B: 0xA1, A: 0xFF}
-	floorColor    = color.RGBA{R: 0x31, G: 0x32, B: 0x44, A: 0xFF}
-	wallColor     = color.RGBA{R: 0x18, G: 0x18, B: 0x25, A: 0xFF}
+	darkColor  = color.RGBA{R: 0x0B, G: 0x0B, B: 0x11, A: 0xFF}
+	exitColor  = color.RGBA{R: 0xA6, G: 0xE3, B: 0xA1, A: 0xFF}
+	floorColor = color.RGBA{R: 0x31, G: 0x32, B: 0x44, A: 0xFF}
+	wallColor  = color.RGBA{R: 0x18, G: 0x18, B: 0x25, A: 0xFF}
 )
 
 // Dungeon is a generated level in the style of Rogue laid out as a maze: the
@@ -50,11 +55,16 @@ var (
 // round; every other branch of the tree is a dead end. The tree spans every
 // sector, so the level is connected by construction and no reachability pass
 // is needed.
+//
+// Tiles in sight of the viewpoint are rendered lit, tiles that have been in
+// sight of an earlier viewpoint are rendered dim, and everything else is dark.
+// The viewpoint is set with Illuminate, and the level is spawn lit until then.
 type Dungeon struct {
 	entrance int
 	exit     int
 	image    *ebiten.Image
 	rooms    []Rect
+	sight    *LineOfSight
 	tiles    [Cols][Rows]Tile
 }
 
@@ -81,10 +91,11 @@ func NewDungeon(seed uint64) (dungeon *Dungeon) {
 	random := rand.New(rand.NewPCG(seed, 0x9E3779B97F4A7C15))
 
 	dungeon = &Dungeon{}
+	dungeon.sight = NewLineOfSight(dungeon.blocksSight)
 	dungeon.placeRooms(random)
 	dungeon.digCorridors(dungeon.planRoutes(random), random)
 	dungeon.placeExit()
-	dungeon.render()
+	dungeon.Illuminate(dungeon.SpawnPoint())
 
 	return dungeon
 }
@@ -119,6 +130,25 @@ func (this *Dungeon) Draw(screen *ebiten.Image) {
 //   - exitPoint: the centre tile of the room furthest from the entrance.
 func (this *Dungeon) ExitPoint() (exitPoint Vector) {
 	return this.rooms[this.exit].Center()
+}
+
+// Illuminate moves the viewpoint the level is seen from, hiding whatever has
+// fallen out of sight and revealing whatever has come into it.
+//
+// Notes:
+//   - the level is re-rendered here rather than every frame, so a viewpoint
+//     that has not moved costs nothing.
+//
+// Parameters:
+//   - origin: the tile the level is seen from. Everything goes dark when it
+//     lies off the map.
+func (this *Dungeon) Illuminate(origin Vector) {
+	if this.image != nil && origin == this.sight.Origin() {
+		return
+	}
+
+	this.sight.LookFrom(origin)
+	this.render()
 }
 
 // SpawnPoint reports where a new player should start.
@@ -156,6 +186,19 @@ func (this *Dungeon) TileAt(x int, y int) (tile Tile) {
 //   - walkable: false for walls and for anything off the map.
 func (this *Dungeon) Walkable(x int, y int) (walkable bool) {
 	return this.TileAt(x, y).Walkable()
+}
+
+// blocksSight reports whether the tile at x, y stops sight passing through it.
+//
+// Parameters:
+//   - x: the tile column.
+//   - y: the tile row.
+//
+// Returns:
+//   - blocksSight: true for walls, which are the only tiles sight cannot cross.
+//     A wall is still seen itself; only what lies behind it is hidden.
+func (this *Dungeon) blocksSight(x int, y int) (blocksSight bool) {
+	return this.TileAt(x, y) == TileWall
 }
 
 // carve turns a solid tile into a corridor, or into a door when it sits on the
@@ -390,25 +433,27 @@ func (this *Dungeon) planRoutes(random *rand.Rand) (edges []edge) {
 	return edges
 }
 
-// render bakes the tile grid into a single image so that drawing a frame costs
-// one blit instead of one filled rectangle per tile.
+// render bakes the tiles the viewpoint can see, and the dimmed tiles it
+// remembers, into a single image over a dark ground, so that drawing a frame
+// costs one blit instead of one filled rectangle per tile. The image is kept
+// and repainted rather than replaced, so moving the viewpoint does not leave a
+// dead image behind every step.
 func (this *Dungeon) render() {
-	this.image = ebiten.NewImage(ScreenWidth, ScreenHeight)
-	this.image.Fill(wallColor)
+	if this.image == nil {
+		this.image = ebiten.NewImage(ScreenWidth, ScreenHeight)
+	}
+
+	this.image.Fill(darkColor)
 
 	for y := range Rows {
 		for x := range Cols {
-			var tileColor color.RGBA
+			var paint color.RGBA
 
-			switch this.tiles[x][y] {
-			case TileFloor:
-				tileColor = floorColor
-			case TileCorridor:
-				tileColor = corridorColor
-			case TileDoor:
-				tileColor = doorColor
-			case TileExit:
-				tileColor = exitColor
+			switch {
+			case this.sight.Visible(x, y):
+				paint = tileColor(this.tiles[x][y])
+			case this.sight.Explored(x, y):
+				paint = dim(tileColor(this.tiles[x][y]))
 			default:
 				continue
 			}
@@ -419,9 +464,26 @@ func (this *Dungeon) render() {
 				float32(y*GridSize),
 				GridSize,
 				GridSize,
-				tileColor,
+				paint,
 				false)
 		}
+	}
+}
+
+// dim fades a lit colour towards the dark the level sits on, which is how a
+// remembered tile is told apart from one in sight.
+//
+// Parameters:
+//   - lit: the colour the tile is painted when it can be seen.
+//
+// Returns:
+//   - dimmed: the colour the tile is painted when it is only remembered.
+func dim(lit color.RGBA) (dimmed color.RGBA) {
+	return color.RGBA{
+		R: fade(lit.R, darkColor.R),
+		G: fade(lit.G, darkColor.G),
+		B: fade(lit.B, darkColor.B),
+		A: lit.A,
 	}
 }
 
@@ -521,6 +583,19 @@ func farthest(links [][]int, from int) (farthest int) {
 	}
 
 	return farthest
+}
+
+// fade mixes one channel of a lit colour into the same channel of the dark.
+//
+// Parameters:
+//   - lit: the channel value of the lit colour.
+//   - dark: the channel value of the dark the level sits on.
+//
+// Returns:
+//   - faded: the channel value dimLevel of the way from dark to lit, which
+//     always lands between the two whichever of them is the brighter.
+func fade(lit uint8, dark uint8) (faded uint8) {
+	return uint8(float32(dark) + (float32(lit)-float32(dark))*dimLevel)
 }
 
 // routeEdges walks the one route a tree holds between two rooms.
@@ -637,4 +712,25 @@ func spanningTree(random *rand.Rand) (edges []edge) {
 	}
 
 	return edges
+}
+
+// tileColor reports the colour a tile is painted when it can be seen.
+//
+// Parameters:
+//   - tile: the tile to paint.
+//
+// Returns:
+//   - tileColor: the colour for that tile. Corridors and doors are painted as
+//     floor, so a passage reads as part of the same dug space as the rooms it
+//     joins rather than as something laid over them. Only the exit is picked
+//     out, because it is the one tile worth spotting from across a room.
+func tileColor(tile Tile) (tileColor color.RGBA) {
+	switch tile {
+	case TileFloor, TileCorridor, TileDoor:
+		return floorColor
+	case TileExit:
+		return exitColor
+	default:
+		return wallColor
+	}
 }
