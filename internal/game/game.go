@@ -83,9 +83,9 @@ func seedFromSource(source []byte) (seed uint64) {
 // Draw renders the current frame onto screen.
 //
 // Notes:
-//   - the tiles the player can see are drawn lit and the ones already walked
-//     past are drawn dim. Everything else is dark, including the gutter the
-//     screen shake opens up at the edges.
+//   - the tiles the player can see are drawn lit, fading off with distance,
+//     and the ones already walked past are drawn dim. Everything else is dark,
+//     including the gutter the screen shake opens up at the edges.
 //   - the world is drawn into an offscreen buffer and then blitted across at
 //     the screen shake's offset, so the shake moves the level as one piece.
 //     The heads up display is drawn straight onto the screen afterwards and so
@@ -152,6 +152,8 @@ func (this *Game) Update() (err error) {
 	if this.won {
 		return nil
 	}
+
+	this.dungeon.Update()
 
 	if inpututil.IsKeyJustPressed(ebiten.KeyR) {
 		this.shake.Shake(ShakeMagnitude, ShakeDuration)
