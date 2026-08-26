@@ -25,18 +25,28 @@ const (
 	UpdateTime = float32(1) / 8
 )
 
-var GameObjects []GameObject
+const (
+	// statePlaying is the run in progress.
+	statePlaying gameState = iota
+
+	// stateWon is the run over with the player on the exit.
+	stateWon
+
+	// stateDead is the run over with the player out of health.
+	stateDead
+)
 
 // Game holds all mutable game state and implements the ebiten.Game interface.
 type Game struct {
-	dungeon *Dungeon
-	player  *Player
-	seed    uint64
-	shake   *ScreenShake
-	source  []byte
-	won     bool
-	world   *ebiten.Image
+	buffer *ebiten.Image
+	seed   uint64
+	source []byte
+	state  gameState
+	world  *World
 }
+
+// gameState is which screen the game is showing.
+type gameState uint8
 
 // New creates a Game holding a freshly generated level.
 //
@@ -49,20 +59,13 @@ type Game struct {
 //   - game: a ready-to-run Game.
 func New(source []byte) (game *Game) {
 	seed := seedFromSource(source)
-	dungeon := NewDungeon(seed)
 
-	game = &Game{
-		dungeon: dungeon,
-		player:  NewPlayer(dungeon),
-		seed:    seed,
-		shake:   NewScreenShake(),
-		source:  source,
-		world:   ebiten.NewImage(ScreenWidth, ScreenHeight),
+	return &Game{
+		buffer: ebiten.NewImage(ScreenWidth, ScreenHeight),
+		seed:   seed,
+		source: source,
+		world:  NewWorld(seed),
 	}
-
-	GameObjects = []GameObject{game.player}
-
-	return game
 }
 
 // seedFromSource hashes source down to a seed, so that the first level is a
@@ -91,27 +94,35 @@ func seedFromSource(source []byte) (seed uint64) {
 // Parameters:
 //   - screen: the destination image for this frame.
 func (this *Game) Draw(screen *ebiten.Image) {
-	if this.won {
-		drawWinScreen(screen)
+	switch this.state {
+	case stateWon:
+		drawEndScreen(screen, winTitle, exitColor)
+
+		return
+	case stateDead:
+		drawEndScreen(screen, deathTitle, healthBarLowColor)
 
 		return
 	}
 
-	this.drawWorld()
+	this.buffer.Clear()
+	this.world.Draw(this.buffer)
 
-	offsetX, offsetY := this.shake.Offset()
+	offsetX, offsetY := this.world.Shake().Offset()
 	options := &ebiten.DrawImageOptions{}
 	options.GeoM.Translate(float64(offsetX), float64(offsetY))
 
 	screen.Fill(wallColor)
-	screen.DrawImage(this.world, options)
+	screen.DrawImage(this.buffer, options)
 
-	drawHealthBar(screen, this.player.Health(), PlayerMaxHealth)
+	drawHUD(screen, this.world)
 
 	ebitenutil.DebugPrint(
 		screen,
 		fmt.Sprintf(
-			"CodeRunner\nFPS: %.1f  TPS: %.1f\nWASD/arrows to move, r to shake, esc to quit\nReach the green exit to win",
+			"CodeRunner\nFPS: %.1f  TPS: %.1f\n"+
+				"WASD/arrows move, Space attack, Q swap weapon, Esc quit\n"+
+				"Find the key, open the boss room, slay the boss, take the exit",
 			ebiten.ActualFPS(),
 			ebiten.ActualTPS()))
 }
@@ -132,8 +143,9 @@ func (this *Game) Layout(outsideWidth int, outsideHeight int) (screenWidth int, 
 // Update advances the game state by a single tick.
 //
 // Notes:
-//   - once the player has stepped onto the exit the level is won and the
-//     world freezes: only Escape is read after that.
+//   - once the player has stepped onto the open exit, or run out of health,
+//     the run is over and the world freezes: only Escape and R, which starts
+//     the same level over, are read after that.
 //
 // Returns:
 //   - err: ebiten.Termination when the player quits, otherwise nil.
@@ -142,37 +154,42 @@ func (this *Game) Update() (err error) {
 		return ebiten.Termination
 	}
 
-	this.shake.Update()
+	if this.state != statePlaying {
+		if inpututil.IsKeyJustPressed(ebiten.KeyR) {
+			this.restart()
+		}
 
-	if this.won {
 		return nil
 	}
 
-	if inpututil.IsKeyJustPressed(ebiten.KeyR) {
-		this.shake.Shake(ShakeMagnitude, ShakeDuration)
-	}
+	this.world.Update()
 
-	for _, gameObject := range GameObjects {
-		gameObject.Update()
-	}
+	player := this.world.Player()
+	position := player.Position()
 
-	position := this.player.Position()
-	if this.dungeon.TileAt(position.X, position.Y) == TileExit {
-		this.won = true
+	switch {
+	case player.Health() <= 0:
+		this.state = stateDead
+	case this.world.Dungeon().TileAt(position.X, position.Y) == TileExit:
+		this.state = stateWon
 	}
 
 	return nil
 }
 
-// drawWorld paints the dungeon and everything living in it into the offscreen
-// world buffer, ready to be blitted at the shake offset.
-func (this *Game) drawWorld() {
-	this.world.Clear()
-	this.dungeon.Draw(this.world)
+// World reports the level currently being played.
+//
+// Returns:
+//   - world: the live world, for tooling and tests to inspect or steer.
+func (this *Game) World() (world *World) {
+	return this.world
+}
 
-	for _, gameObject := range GameObjects {
-		gameObject.Draw(this.world)
-	}
+// restart throws the current world away and starts the same level over.
+func (this *Game) restart() {
+	this.world.Dispose()
+	this.world = NewWorld(this.seed)
+	this.state = statePlaying
 }
 
 // Clamp constrains value to the inclusive range [min, max].
@@ -194,4 +211,12 @@ func Clamp(value int, min int, max int) (result int) {
 	}
 
 	return value
+}
+
+// tickSeconds reports how much game time one update covers.
+//
+// Returns:
+//   - seconds: the length of a tick, in seconds.
+func tickSeconds() (seconds float32) {
+	return 1 / float32(ebiten.TPS())
 }
